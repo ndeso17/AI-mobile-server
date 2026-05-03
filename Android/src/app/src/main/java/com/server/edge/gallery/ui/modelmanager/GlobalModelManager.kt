@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material3.AlertDialog
@@ -142,11 +143,23 @@ fun GlobalModelManager(
   var searchQuery by remember { mutableStateOf("") }
   var selectedFilter by remember { mutableStateOf("All") }
   val filterOptions = listOf("All", "Downloaded", "Media", "Custom")
+  var refreshRequested by remember { mutableStateOf(false) }
 
   val promoId = "gm4_banner"
   var showPromo by remember { mutableStateOf(false) }
   LaunchedEffect(Unit) {
     showPromo = !viewModel.dataStoreRepository.hasViewedPromo(promoId = promoId)
+  }
+
+  LaunchedEffect(uiState.loadingModelAllowlist, uiState.loadingModelAllowlistError, refreshRequested) {
+    if (refreshRequested && !uiState.loadingModelAllowlist) {
+      refreshRequested = false
+      if (uiState.loadingModelAllowlistError.isEmpty()) {
+        snackbarHostState.showSnackbar("Model list refreshed")
+      } else {
+        snackbarHostState.showSnackbar("Refresh failed, fallback list loaded")
+      }
+    }
   }
 
   val filePickerLauncher: ActivityResultLauncher<Intent> =
@@ -309,22 +322,46 @@ fun GlobalModelManager(
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }
-          Button(
-            onClick = { showImportModelSheet = true },
-            colors = ButtonDefaults.buttonColors(
-              containerColor = MaterialTheme.colorScheme.primary,
-              contentColor = MaterialTheme.colorScheme.onPrimary,
-            ),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-          ) {
-            Icon(
-              imageVector = Icons.Filled.Add,
-              contentDescription = null,
-              modifier = Modifier.size(18.dp),
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text("Import", style = MaterialTheme.typography.labelLarge)
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+              onClick = {
+                refreshRequested = true
+                viewModel.refreshModelAllowlist(forceRemote = true)
+              },
+              enabled = !uiState.loadingModelAllowlist,
+              colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+              ),
+              shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Rounded.Refresh,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Refresh", style = MaterialTheme.typography.labelLarge)
+            }
+
+            Button(
+              onClick = { showImportModelSheet = true },
+              colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+              ),
+              shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Import", style = MaterialTheme.typography.labelLarge)
+            }
           }
         }
       }
@@ -525,7 +562,14 @@ fun GlobalModelManager(
           Text("From local model file", modifier = Modifier.clearAndSetSemantics {})
         }
       }
+      Text(
+        stringResource(R.string.import_supported_extensions_info),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+      )
       // From remote URL option
+      val registerFromUrlLabel = stringResource(R.string.import_remote_url_option)
       Box(
         modifier =
           Modifier.clickable {
@@ -537,7 +581,7 @@ fun GlobalModelManager(
             }
             .semantics {
               role = Role.Button
-              contentDescription = "Import model from remote URL"
+              contentDescription = registerFromUrlLabel
             }
       ) {
         Row(
@@ -549,7 +593,7 @@ fun GlobalModelManager(
             Icons.Outlined.Link,
             contentDescription = null,
           )
-          Text("From remote URL", modifier = Modifier.clearAndSetSemantics {})
+          Text(registerFromUrlLabel, modifier = Modifier.clearAndSetSemantics {})
         }
       }
     }
@@ -616,7 +660,7 @@ fun GlobalModelManager(
       },
       onDismissRequest = { showUnsupportedFileTypeDialog = false },
       title = { Text("Unsupported file type") },
-      text = { Text("Only \".task\" or \".litertlm\" file type is supported.") },
+      text = { Text(stringResource(R.string.import_unsupported_type_actionable)) },
       confirmButton = {
         Button(onClick = { showUnsupportedFileTypeDialog = false }) {
           Text(stringResource(R.string.ok))
@@ -755,4 +799,3 @@ fun OpenAiServerPanel() {
     }
   }
 }
-

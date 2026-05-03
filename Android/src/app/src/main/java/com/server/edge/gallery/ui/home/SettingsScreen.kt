@@ -50,6 +50,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,6 +63,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -70,6 +72,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.server.edge.gallery.BuildConfig
+import com.server.edge.gallery.R
 import com.server.edge.gallery.proto.Theme
 import com.server.edge.gallery.ui.common.tos.AppTosDialog
 import com.server.edge.gallery.ui.modelmanager.ModelManagerViewModel
@@ -99,6 +102,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
     var selectedTheme by remember { mutableStateOf(ThemeSettings.themeOverride.value) }
     var allowExpandableRam by remember {
         mutableStateOf(modelManagerViewModel.getAllowExpandableRamForModelFiltering())
@@ -187,7 +191,7 @@ fun SettingsScreen(
 
         SettingsCard(
             icon = Icons.Outlined.Info,
-            title = "Model Compatibility",
+            title = stringResource(R.string.settings_model_compatibility_title),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -195,22 +199,45 @@ fun SettingsScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    "Gunakan expandable RAM untuk kompatibilitas model (Critical)",
+                    stringResource(R.string.settings_expandable_ram_toggle),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                 )
                 Switch(
                     checked = allowExpandableRam,
+                    enabled = !modelManagerUiState.loadingModelAllowlist,
                     onCheckedChange = { checked ->
                         allowExpandableRam = checked
                         modelManagerViewModel.setAllowExpandableRamForModelFiltering(checked)
-                        modelManagerViewModel.loadModelAllowlist()
+                        modelManagerViewModel.reloadAllowlistWithCurrentPolicy()
                     },
                 )
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Tidak disarankan. Risiko OOM dan app kill oleh Android bisa meningkat.",
+                stringResource(R.string.settings_detected_ram, modelManagerUiState.detectedRamGb),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(
+                    R.string.settings_detected_expandable_ram,
+                    modelManagerUiState.detectedExpandableRamGb
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(
+                    R.string.settings_effective_filter_ram,
+                    modelManagerUiState.effectiveRamForFilteringGb
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.settings_expandable_ram_helper),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -119,6 +119,16 @@
   <string name="memory_warning_content" translatable="false">The model you\'ve selected may exceed your device\'s memory, which can cause the app to crash. For the best experience, we recommend trying a smaller model.</string>
   <string name="memory_warning_proceed_anyway" translatable="false">Proceed anyway</string>
   <string name="memory_warning_title" translatable="false">Memory Warning</string>
+  <string name="settings_model_compatibility_title" translatable="false">Model Compatibility</string>
+  <string name="settings_expandable_ram_toggle" translatable="false">Gunakan expandable RAM untuk kompatibilitas model (Critical)</string>
+  <string name="settings_detected_ram" translatable="false">RAM terdeteksi: %1$.1f GB</string>
+  <string name="settings_detected_expandable_ram" translatable="false">Expandable RAM terdeteksi: %1$.1f GB</string>
+  <string name="settings_effective_filter_ram" translatable="false">RAM efektif untuk filter: %1$.1f GB</string>
+  <string name="settings_expandable_ram_helper" translatable="false">Jika switch aktif, filter model memakai RAM asli + expandable RAM. Tidak disarankan: risiko OOM dan app kill oleh Android bisa meningkat.</string>
+  <string name="import_supported_extensions_info" translatable="false">Supported local extensions: .task, .litertlm</string>
+  <string name="import_remote_url_option" translatable="false">Register model from URL</string>
+  <string name="import_unsupported_type_actionable" translatable="false">Hanya file model native ".task" atau ".litertlm" yang didukung.</string>
+  <string name="import_url_explainer" translatable="false">URL boleh berupa halaman model/repo (mis. HuggingFace) atau direct download URL. URL ini dipakai untuk registrasi metadata model; proses download tetap lewat flow download app.</string>
   <string name="max_tokens_warning_message" translatable="false">Setting max tokens above 10000 may cause app to be unstable.</string>
   <string name="model_is_initializing_msg" translatable="false">Initializing model…</string>
   <string name="model_list_imported_models_title" translatable="false">Imported models</string>

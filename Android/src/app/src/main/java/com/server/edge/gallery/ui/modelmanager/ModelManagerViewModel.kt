@@ -88,7 +88,7 @@ private const val TEXT_INPUT_HISTORY_MAX_SIZE = 50
 private const val MODEL_ALLOWLIST_FILENAME = "model_allowlist.json"
 private const val MODEL_ALLOWLIST_TEST_FILENAME = "model_allowlist_test.json"
 private const val ALLOWLIST_BASE_URL =
-  "https://raw.githubusercontent.com/google-ai-edge/gallery/refs/heads/main/model_allowlists"
+  "https://raw.githubusercontent.com/ndeso17/AI-mobile-server/main/model_allowlists"
 
 private const val TEST_MODEL_ALLOW_LIST = ""
 
@@ -160,6 +160,9 @@ data class ModelManagerUiState(
   /** The history of text inputs entered by the user. */
   val textInputHistory: List<String> = listOf(),
   val allowExpandableRamForModelFiltering: Boolean = false,
+  val detectedRamGb: Double = 0.0,
+  val detectedExpandableRamGb: Double = 0.0,
+  val effectiveRamForFilteringGb: Double = 0.0,
   val configValuesUpdateTrigger: Long = 0L,
   // Updated when model is imported of an imported model is deleted.
   val modelImportingUpdateTrigger: Long = 0L,
@@ -304,6 +307,10 @@ constructor(
   fun setAllowExpandableRamForModelFiltering(allow: Boolean) {
     dataStoreRepository.setAllowExpandableRamForModelFiltering(allow)
     _uiState.update { _uiState.value.copy(allowExpandableRamForModelFiltering = allow) }
+  }
+
+  fun reloadAllowlistWithCurrentPolicy() {
+    loadModelAllowlist()
   }
 
   fun getAllowExpandableRamForModelFiltering(): Boolean {
@@ -1102,6 +1109,14 @@ constructor(
   }
 
   fun loadModelAllowlist() {
+    loadModelAllowlistInternal(forceRemote = false)
+  }
+
+  fun refreshModelAllowlist(forceRemote: Boolean = true) {
+    loadModelAllowlistInternal(forceRemote = forceRemote)
+  }
+
+  private fun loadModelAllowlistInternal(forceRemote: Boolean) {
     _uiState.update {
       uiState.value.copy(loadingModelAllowlist = true, loadingModelAllowlistError = "")
     }
@@ -1114,12 +1129,14 @@ constructor(
         // Load model allowlist json.
         var modelAllowlist: ModelAllowlist? = null
 
-        // Try to read the test allowlist first.
-        Log.d(TAG, "Loading test model allowlist.")
-        modelAllowlist = readModelAllowlistFromDisk(fileName = MODEL_ALLOWLIST_TEST_FILENAME)
+        if (!forceRemote) {
+          // Try to read the test allowlist first.
+          Log.d(TAG, "Loading test model allowlist.")
+          modelAllowlist = readModelAllowlistFromDisk(fileName = MODEL_ALLOWLIST_TEST_FILENAME)
+        }
 
         // Local test only.
-        if (TEST_MODEL_ALLOW_LIST.isNotEmpty()) {
+        if (!forceRemote && TEST_MODEL_ALLOW_LIST.isNotEmpty()) {
           Log.d(TAG, "Loading local model allowlist for testing.")
           val gson = Gson()
           try {
@@ -1187,6 +1204,7 @@ constructor(
 
         // Convert models in the allowlist.
         val curTasks = getActiveCustomTasks().map { it.task }
+        curTasks.forEach { it.models.clear() }
         val nameToModel = mutableMapOf<String, Model>()
         for (allowedModel in modelAllowlist.models) {
           if (allowedModel.disabled == true) {
@@ -1225,7 +1243,9 @@ constructor(
           nameToModel.put(model.name, model)
           for (taskType in allowedModel.taskTypes) {
             val task = curTasks.find { it.id == taskType }
-            task?.models?.add(model)
+            if (task != null && task.models.none { it.name == model.name }) {
+              task.models.add(model)
+            }
 
             if (task?.id == BuiltInTaskId.LLM_TINY_GARDEN) {
               val newConfigs = model.configs.toMutableList()
@@ -1244,7 +1264,9 @@ constructor(
                 Log.w(TAG, "Model '${modelName}' in task '${task.label}' not found in allowlist.")
                 continue
               }
-              task.models.add(model)
+              if (task.models.none { it.name == model.name }) {
+                task.models.add(model)
+              }
             }
           }
         }
@@ -1261,6 +1283,7 @@ constructor(
               tasksByCategory = groupTasksByCategory(),
             )
         }
+        curTasks.forEach { it.updateTrigger.value = System.currentTimeMillis() }
 
         // Process pending downloads.
         processPendingDownloads()
@@ -1352,6 +1375,7 @@ constructor(
   }
 
   private fun createUiState(): ModelManagerUiState {
+    val ramSnapshot = getDeviceMemorySnapshot(allowExpandableRam = dataStoreRepository.getAllowExpandableRamForModelFiltering())
     val modelDownloadStatus: MutableMap<String, ModelDownloadStatus> = mutableMapOf()
     val modelInstances: MutableMap<String, ModelInitializationStatus> = mutableMapOf()
     val tasks: MutableMap<String, Task> = mutableMapOf()
@@ -1378,24 +1402,38 @@ constructor(
       val model = createModelFromImportedModelInfo(info = importedModel)
 
       // Add to task.
-      tasks.get(key = BuiltInTaskId.LLM_CHAT)?.models?.add(model)
-      tasks.get(key = BuiltInTaskId.LLM_PROMPT_LAB)?.models?.add(model)
-      tasks.get(key = BuiltInTaskId.LLM_AGENT_CHAT)?.models?.add(model)
+      if (tasks.get(key = BuiltInTaskId.LLM_CHAT)?.models?.none { it.name == model.name } == true) {
+        tasks.get(key = BuiltInTaskId.LLM_CHAT)?.models?.add(model)
+      }
+      if (tasks.get(key = BuiltInTaskId.LLM_PROMPT_LAB)?.models?.none { it.name == model.name } == true) {
+        tasks.get(key = BuiltInTaskId.LLM_PROMPT_LAB)?.models?.add(model)
+      }
+      if (tasks.get(key = BuiltInTaskId.LLM_AGENT_CHAT)?.models?.none { it.name == model.name } == true) {
+        tasks.get(key = BuiltInTaskId.LLM_AGENT_CHAT)?.models?.add(model)
+      }
       if (model.llmSupportImage) {
-        tasks.get(key = BuiltInTaskId.LLM_ASK_IMAGE)?.models?.add(model)
+        if (tasks.get(key = BuiltInTaskId.LLM_ASK_IMAGE)?.models?.none { it.name == model.name } == true) {
+          tasks.get(key = BuiltInTaskId.LLM_ASK_IMAGE)?.models?.add(model)
+        }
       }
       if (model.llmSupportAudio) {
-        tasks.get(key = BuiltInTaskId.LLM_ASK_AUDIO)?.models?.add(model)
+        if (tasks.get(key = BuiltInTaskId.LLM_ASK_AUDIO)?.models?.none { it.name == model.name } == true) {
+          tasks.get(key = BuiltInTaskId.LLM_ASK_AUDIO)?.models?.add(model)
+        }
       }
       if (model.llmSupportTinyGarden) {
-        tasks.get(key = BuiltInTaskId.LLM_TINY_GARDEN)?.models?.add(model)
+        if (tasks.get(key = BuiltInTaskId.LLM_TINY_GARDEN)?.models?.none { it.name == model.name } == true) {
+          tasks.get(key = BuiltInTaskId.LLM_TINY_GARDEN)?.models?.add(model)
+        }
         val newConfigs = model.configs.toMutableList()
         newConfigs.add(RESET_CONVERSATION_TURN_COUNT_CONFIG)
         model.configs = newConfigs
         model.preProcess()
       }
       if (model.llmSupportMobileActions) {
-        tasks.get(key = BuiltInTaskId.LLM_MOBILE_ACTIONS)?.models?.add(model)
+        if (tasks.get(key = BuiltInTaskId.LLM_MOBILE_ACTIONS)?.models?.none { it.name == model.name } == true) {
+          tasks.get(key = BuiltInTaskId.LLM_MOBILE_ACTIONS)?.models?.add(model)
+        }
       }
 
       // Update status.
@@ -1418,25 +1456,36 @@ constructor(
       modelInitializationStatus = modelInstances,
       textInputHistory = textInputHistory,
       allowExpandableRamForModelFiltering = dataStoreRepository.getAllowExpandableRamForModelFiltering(),
+      detectedRamGb = ramSnapshot.totalGb,
+      detectedExpandableRamGb = ramSnapshot.expandableGb,
+      effectiveRamForFilteringGb = ramSnapshot.effectiveGb,
     )
   }
 
   private fun getAvailableDeviceMemoryGb(allowExpandableRam: Boolean): Double {
+    return getDeviceMemorySnapshot(allowExpandableRam).effectiveGb
+  }
+
+  private data class DeviceMemorySnapshot(
+    val totalGb: Double,
+    val expandableGb: Double,
+    val effectiveGb: Double,
+  )
+
+  private fun getDeviceMemorySnapshot(allowExpandableRam: Boolean): DeviceMemorySnapshot {
     val activityManager =
       context.applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     val memoryInfo = ActivityManager.MemoryInfo()
     activityManager.getMemoryInfo(memoryInfo)
     val totalGb = memoryInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
-    if (!allowExpandableRam) {
-      return totalGb
-    }
     val advertisedGb =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
         memoryInfo.advertisedMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
       } else {
         totalGb
       }
-    return maxOf(totalGb, advertisedGb)
+    val effectiveGb = if (allowExpandableRam) maxOf(totalGb, advertisedGb) else totalGb
+    return DeviceMemorySnapshot(totalGb = totalGb, expandableGb = advertisedGb, effectiveGb = effectiveGb)
   }
 
   private fun createModelFromImportedModelInfo(info: ImportedModel): Model {

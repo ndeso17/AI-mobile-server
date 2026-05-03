@@ -493,6 +493,7 @@ fun ModelRemoteImportDialog(
   var modelUrl by remember { mutableStateOf("") }
   var modelName by remember { mutableStateOf("") }
   var fileSizeText by remember { mutableStateOf("") }
+  var formError by remember { mutableStateOf("") }
 
   val initialValues: Map<String, Any> = remember {
     mutableMapOf<String, Any>().apply {
@@ -530,6 +531,11 @@ fun ModelRemoteImportDialog(
           style = MaterialTheme.typography.titleLarge,
           modifier = Modifier.padding(bottom = 4.dp),
         )
+        Text(
+          stringResource(R.string.import_url_explainer),
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         Column(
           modifier = Modifier.verticalScroll(rememberScrollState()).weight(1f, fill = false),
@@ -544,6 +550,7 @@ fun ModelRemoteImportDialog(
             value = modelUrl,
             onValueChange = {
               modelUrl = it
+              formError = ""
               // Auto-derive name from URL if name is still empty
               if (modelName.isEmpty() && it.isNotEmpty()) {
                 val lastPart = it.trimEnd('/').substringAfterLast('/')
@@ -567,6 +574,7 @@ fun ModelRemoteImportDialog(
             value = modelName,
             onValueChange = {
               modelName = it
+              formError = ""
               values[ConfigKeys.NAME.label] = it
             },
             label = { Text("Model name") },
@@ -594,6 +602,14 @@ fun ModelRemoteImportDialog(
             },
             values = values,
           )
+
+          if (formError.isNotEmpty()) {
+            Text(
+              formError,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.error,
+            )
+          }
         }
 
         // Button row.
@@ -604,6 +620,16 @@ fun ModelRemoteImportDialog(
           TextButton(onClick = { onDismiss() }) { Text("Cancel") }
           Button(
             onClick = {
+              val normalizedUrl = modelUrl.trim()
+              val normalizedName = modelName.trim()
+              if (!(normalizedUrl.startsWith("http://") || normalizedUrl.startsWith("https://"))) {
+                formError = "URL wajib dimulai dengan http:// atau https://"
+                return@Button
+              }
+              if (normalizedName.isEmpty()) {
+                formError = "Model name wajib diisi."
+                return@Button
+              }
               val fileSize = fileSizeText.toLongOrNull() ?: 0L
               val supportedAccelerators =
                 (convertValueToTargetType(
@@ -658,7 +684,7 @@ fun ModelRemoteImportDialog(
 
               val importedModel: ImportedModel =
                 ImportedModel.newBuilder()
-                  .setFileName(modelName.ifEmpty { "remote_model" })
+                  .setFileName(ensureValidFileName(normalizedName))
                   .setFileSize(fileSize)
                   .setLlmConfig(
                     LlmConfig.newBuilder()
@@ -675,7 +701,7 @@ fun ModelRemoteImportDialog(
                       .build()
                   )
                   .build()
-              onDone(importedModel, modelUrl)
+              onDone(importedModel, normalizedUrl)
             },
             enabled = modelUrl.isNotEmpty() && modelName.isNotEmpty(),
           ) {
