@@ -452,8 +452,9 @@ fun MessageInputText(
                 horizontalArrangement = Arrangement.SpaceBetween,
               ) {
                 Row(
+                  modifier = Modifier.horizontalScroll(rememberScrollState()),
                   verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(4.dp),
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                   OutlinedButton(
                     onClick = {
@@ -463,11 +464,19 @@ fun MessageInputText(
                     },
                     enabled = inputEnabled && !inProgress && !isResettingSession && !modelInitializing,
                   ) {
-                    Text(if (chatMode == ChatMode.PLAN) "Plan" else "Default")
+                    Text(
+                      stringResource(
+                        if (chatMode == ChatMode.PLAN) {
+                          R.string.plan_mode_on
+                        } else {
+                          R.string.plan_mode_off
+                        }
+                      )
+                    )
                   }
 
                   Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Thinking", style = bodyLargeNarrow)
+                    Text(stringResource(R.string.show_thinking), style = bodyLargeNarrow)
                     Switch(
                       checked = showThinking,
                       onCheckedChange = { onShowThinkingChanged(it) },
