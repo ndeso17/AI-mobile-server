@@ -69,6 +69,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.Instant
 import javax.inject.Inject
 import kotlin.collections.sortedWith
 import kotlinx.coroutines.Dispatchers
@@ -119,6 +120,28 @@ enum class CleanupReason {
   INTERNAL_MEMORY_POLICY,
 }
 
+enum class AllowlistLoadSource {
+  REMOTE,
+  DISK,
+  ASSETS,
+}
+
+enum class AllowlistRefreshStatus {
+  SUCCESS,
+  FAILED_REMOTE_FALLBACK_USED,
+  FAILED_ALL,
+}
+
+data class AllowlistRefreshResult(
+  val status: AllowlistRefreshStatus,
+  val source: AllowlistLoadSource? = null,
+  val errorReason: String = "",
+  val beforeCount: Int = 0,
+  val afterCount: Int = 0,
+  val newModelNames: List<String> = listOf(),
+  val createdAt: String = Instant.now().toString(),
+)
+
 enum class TokenStatus {
   NOT_STORED,
   EXPIRED,
@@ -163,6 +186,7 @@ data class ModelManagerUiState(
   val detectedRamGb: Double = 0.0,
   val detectedExpandableRamGb: Double = 0.0,
   val effectiveRamForFilteringGb: Double = 0.0,
+  val lastAllowlistRefreshResult: AllowlistRefreshResult? = null,
   val configValuesUpdateTrigger: Long = 0L,
   // Updated when model is imported of an imported model is deleted.
   val modelImportingUpdateTrigger: Long = 0L,
@@ -1113,66 +1137,34 @@ constructor(
   }
 
   fun refreshModelAllowlist(forceRemote: Boolean = true) {
-    loadModelAllowlistInternal(forceRemote = forceRemote)
+    loadModelAllowlistInternal(forceRemote = forceRemote, emitRefreshResult = true)
   }
 
-  private fun loadModelAllowlistInternal(forceRemote: Boolean) {
+  fun consumeLastAllowlistRefreshResult() {
+    _uiState.update { _uiState.value.copy(lastAllowlistRefreshResult = null) }
+  }
+
+  private data class AllowlistLoadResult(
+    val allowlist: ModelAllowlist?,
+    val source: AllowlistLoadSource?,
+    val remoteError: String = "",
+  )
+
+  private fun loadModelAllowlistInternal(forceRemote: Boolean, emitRefreshResult: Boolean = false) {
     _uiState.update {
       uiState.value.copy(loadingModelAllowlist = true, loadingModelAllowlistError = "")
     }
 
     viewModelScope.launch(Dispatchers.IO) {
       try {
+        val beforeNames = _allowlistModels.map { it.name }.toSet()
+        val beforeCount = beforeNames.size
+
         // Clear existing allowlist models.
         _allowlistModels.clear()
 
-        // Load model allowlist json.
-        var modelAllowlist: ModelAllowlist? = null
-
-        if (!forceRemote) {
-          // Try to read the test allowlist first.
-          Log.d(TAG, "Loading test model allowlist.")
-          modelAllowlist = readModelAllowlistFromDisk(fileName = MODEL_ALLOWLIST_TEST_FILENAME)
-        }
-
-        // Local test only.
-        if (!forceRemote && TEST_MODEL_ALLOW_LIST.isNotEmpty()) {
-          Log.d(TAG, "Loading local model allowlist for testing.")
-          val gson = Gson()
-          try {
-            modelAllowlist = gson.fromJson(TEST_MODEL_ALLOW_LIST, ModelAllowlist::class.java)
-          } catch (e: JsonSyntaxException) {
-            Log.e(TAG, "Failed to parse local test json", e)
-          }
-        }
-
-        if (modelAllowlist == null) {
-          // Load from github.
-          var version = BuildConfig.VERSION_NAME.replace(".", "_")
-          val url = getAllowlistUrl(version)
-          Log.d(TAG, "Loading model allowlist from internet. Url: $url")
-          val data = getJsonResponse<ModelAllowlist>(url = url)
-          modelAllowlist = data?.jsonObj
-
-          if (modelAllowlist == null) {
-            Log.w(TAG, "Failed to load model allowlist from internet. Trying to load it from disk")
-            modelAllowlist = readModelAllowlistFromDisk()
-          } else {
-            Log.d(TAG, "Done: loading model allowlist from internet")
-            saveModelAllowlistToDisk(modelAllowlistContent = data?.textContent ?: "{}")
-          }
-
-          if (modelAllowlist == null) {
-            Log.w(TAG, "Failed to load from disk. Trying to load from assets")
-            try {
-              val assetContent =
-                context.assets.open(MODEL_ALLOWLIST_FILENAME).bufferedReader().use { it.readText() }
-              modelAllowlist = Gson().fromJson(assetContent, ModelAllowlist::class.java)
-            } catch (e: Exception) {
-              Log.e(TAG, "Failed to load from assets", e)
-            }
-          }
-        }
+        val allowlistLoadResult = loadAllowlistWithFallback(forceRemote = forceRemote)
+        val modelAllowlist = allowlistLoadResult.allowlist
 
         if (modelAllowlist == null) {
           _uiState.update {
@@ -1180,6 +1172,24 @@ constructor(
               loadingModelAllowlist = false,
               loadingModelAllowlistError = "Failed to load model list"
             )
+          }
+          if (emitRefreshResult) {
+            _uiState.update {
+              _uiState.value.copy(
+                lastAllowlistRefreshResult =
+                  AllowlistRefreshResult(
+                    status = AllowlistRefreshStatus.FAILED_ALL,
+                    source = null,
+                    errorReason =
+                      allowlistLoadResult.remoteError.ifEmpty {
+                        "Failed to load model list from remote, disk cache, and assets."
+                      },
+                    beforeCount = beforeCount,
+                    afterCount = 0,
+                    newModelNames = listOf(),
+                  )
+              )
+            }
           }
           return@launch
         }
@@ -1284,6 +1294,30 @@ constructor(
             )
         }
         curTasks.forEach { it.updateTrigger.value = System.currentTimeMillis() }
+
+        if (emitRefreshResult) {
+          val afterNames = _allowlistModels.map { it.name }.toSet()
+          val newNames = (afterNames - beforeNames).sorted()
+          val refreshStatus =
+            if (allowlistLoadResult.source == AllowlistLoadSource.REMOTE) {
+              AllowlistRefreshStatus.SUCCESS
+            } else {
+              AllowlistRefreshStatus.FAILED_REMOTE_FALLBACK_USED
+            }
+          _uiState.update {
+            _uiState.value.copy(
+              lastAllowlistRefreshResult =
+                AllowlistRefreshResult(
+                  status = refreshStatus,
+                  source = allowlistLoadResult.source,
+                  errorReason = allowlistLoadResult.remoteError,
+                  beforeCount = beforeCount,
+                  afterCount = afterNames.size,
+                  newModelNames = newNames,
+                )
+            )
+          }
+        }
 
         // Process pending downloads.
         processPendingDownloads()
@@ -1484,8 +1518,67 @@ constructor(
       } else {
         totalGb
       }
-    val effectiveGb = if (allowExpandableRam) maxOf(totalGb, advertisedGb) else totalGb
+    val effectiveGb =
+      if (allowExpandableRam) {
+        maxOf(totalGb, maxOf(totalGb, advertisedGb) - 2.0)
+      } else {
+        totalGb
+      }
     return DeviceMemorySnapshot(totalGb = totalGb, expandableGb = advertisedGb, effectiveGb = effectiveGb)
+  }
+
+  private fun loadAllowlistWithFallback(forceRemote: Boolean): AllowlistLoadResult {
+    var remoteError = ""
+
+    if (!forceRemote) {
+      Log.d(TAG, "Loading test model allowlist.")
+      val testAllowlist = readModelAllowlistFromDisk(fileName = MODEL_ALLOWLIST_TEST_FILENAME)
+      if (testAllowlist != null) {
+        return AllowlistLoadResult(testAllowlist, AllowlistLoadSource.DISK)
+      }
+
+      if (TEST_MODEL_ALLOW_LIST.isNotEmpty()) {
+        Log.d(TAG, "Loading local model allowlist for testing.")
+        val gson = Gson()
+        try {
+          val localTestAllowlist = gson.fromJson(TEST_MODEL_ALLOW_LIST, ModelAllowlist::class.java)
+          if (localTestAllowlist != null) {
+            return AllowlistLoadResult(localTestAllowlist, AllowlistLoadSource.DISK)
+          }
+        } catch (e: JsonSyntaxException) {
+          Log.e(TAG, "Failed to parse local test json", e)
+        }
+      }
+    }
+
+    val version = BuildConfig.VERSION_NAME.replace(".", "_")
+    val url = getAllowlistUrl(version)
+    Log.d(TAG, "Loading model allowlist from internet. Url: $url")
+    val data = getJsonResponse<ModelAllowlist>(url = url)
+    val remoteAllowlist = data?.jsonObj
+    if (remoteAllowlist != null) {
+      Log.d(TAG, "Done: loading model allowlist from internet")
+      saveModelAllowlistToDisk(modelAllowlistContent = data?.textContent ?: "{}")
+      return AllowlistLoadResult(remoteAllowlist, AllowlistLoadSource.REMOTE)
+    }
+
+    remoteError = "Remote fetch failed for $url"
+    Log.w(TAG, "Failed to load model allowlist from internet. Trying to load it from disk")
+    val diskAllowlist = readModelAllowlistFromDisk()
+    if (diskAllowlist != null) {
+      return AllowlistLoadResult(diskAllowlist, AllowlistLoadSource.DISK, remoteError = remoteError)
+    }
+
+    Log.w(TAG, "Failed to load from disk. Trying to load from assets")
+    return try {
+      val assetContent =
+        context.assets.open(MODEL_ALLOWLIST_FILENAME).bufferedReader().use { it.readText() }
+      val assetsAllowlist = Gson().fromJson(assetContent, ModelAllowlist::class.java)
+      AllowlistLoadResult(assetsAllowlist, AllowlistLoadSource.ASSETS, remoteError = remoteError)
+    } catch (e: Exception) {
+      Log.e(TAG, "Failed to load from assets", e)
+      AllowlistLoadResult(null, null, remoteError = "$remoteError; assets error: ${e.message}")
+    }
   }
 
   private fun createModelFromImportedModelInfo(info: ImportedModel): Model {

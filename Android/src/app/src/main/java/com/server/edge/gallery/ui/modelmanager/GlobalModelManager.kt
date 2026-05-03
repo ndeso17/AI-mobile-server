@@ -143,23 +143,11 @@ fun GlobalModelManager(
   var searchQuery by remember { mutableStateOf("") }
   var selectedFilter by remember { mutableStateOf("All") }
   val filterOptions = listOf("All", "Downloaded", "Media", "Custom")
-  var refreshRequested by remember { mutableStateOf(false) }
 
   val promoId = "gm4_banner"
   var showPromo by remember { mutableStateOf(false) }
   LaunchedEffect(Unit) {
     showPromo = !viewModel.dataStoreRepository.hasViewedPromo(promoId = promoId)
-  }
-
-  LaunchedEffect(uiState.loadingModelAllowlist, uiState.loadingModelAllowlistError, refreshRequested) {
-    if (refreshRequested && !uiState.loadingModelAllowlist) {
-      refreshRequested = false
-      if (uiState.loadingModelAllowlistError.isEmpty()) {
-        snackbarHostState.showSnackbar("Model list refreshed")
-      } else {
-        snackbarHostState.showSnackbar("Refresh failed, fallback list loaded")
-      }
-    }
   }
 
   val filePickerLauncher: ActivityResultLauncher<Intent> =
@@ -325,7 +313,6 @@ fun GlobalModelManager(
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
               onClick = {
-                refreshRequested = true
                 viewModel.refreshModelAllowlist(forceRemote = true)
               },
               enabled = !uiState.loadingModelAllowlist,
@@ -684,6 +671,52 @@ fun GlobalModelManager(
       text = { Text("Looks like the model is a web-only model and is not supported by the app.") },
       confirmButton = {
         Button(onClick = { showUnsupportedWebModelDialog = false }) {
+          Text(stringResource(R.string.ok))
+        }
+      },
+    )
+  }
+
+  uiState.lastAllowlistRefreshResult?.let { refreshResult ->
+    val newNamesPreview =
+      if (refreshResult.newModelNames.isEmpty()) {
+        stringResource(R.string.refresh_no_new_models)
+      } else {
+        val preview = refreshResult.newModelNames.take(5)
+        val extraCount = refreshResult.newModelNames.size - preview.size
+        if (extraCount > 0) {
+          "${preview.joinToString(", ")} ${stringResource(R.string.refresh_and_more, extraCount)}"
+        } else {
+          preview.joinToString(", ")
+        }
+      }
+    val sourceText =
+      refreshResult.source?.name ?: stringResource(R.string.refresh_source_unknown)
+    val statusTitle =
+      when (refreshResult.status) {
+        AllowlistRefreshStatus.SUCCESS -> stringResource(R.string.refresh_dialog_title_success)
+        AllowlistRefreshStatus.FAILED_REMOTE_FALLBACK_USED ->
+          stringResource(R.string.refresh_dialog_title_fallback)
+        AllowlistRefreshStatus.FAILED_ALL -> stringResource(R.string.refresh_dialog_title_failed)
+      }
+    val detailText =
+      buildString {
+        appendLine(stringResource(R.string.refresh_before_count, refreshResult.beforeCount))
+        appendLine(stringResource(R.string.refresh_after_count, refreshResult.afterCount))
+        appendLine(stringResource(R.string.refresh_new_count, refreshResult.newModelNames.size))
+        appendLine(stringResource(R.string.refresh_source_used, sourceText))
+        appendLine(stringResource(R.string.refresh_new_models_label, newNamesPreview))
+        if (refreshResult.errorReason.isNotBlank()) {
+          appendLine(stringResource(R.string.refresh_error_reason, refreshResult.errorReason))
+        }
+      }.trim()
+
+    AlertDialog(
+      onDismissRequest = { viewModel.consumeLastAllowlistRefreshResult() },
+      title = { Text(statusTitle) },
+      text = { Text(detailText) },
+      confirmButton = {
+        Button(onClick = { viewModel.consumeLastAllowlistRefreshResult() }) {
           Text(stringResource(R.string.ok))
         }
       },

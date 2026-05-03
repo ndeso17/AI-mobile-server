@@ -124,11 +124,23 @@
   <string name="settings_detected_ram" translatable="false">RAM terdeteksi: %1$.1f GB</string>
   <string name="settings_detected_expandable_ram" translatable="false">Expandable RAM terdeteksi: %1$.1f GB</string>
   <string name="settings_effective_filter_ram" translatable="false">RAM efektif untuk filter: %1$.1f GB</string>
-  <string name="settings_expandable_ram_helper" translatable="false">Jika switch aktif, filter model memakai RAM asli + expandable RAM. Tidak disarankan: risiko OOM dan app kill oleh Android bisa meningkat.</string>
+  <string name="settings_expandable_ram_helper" translatable="false">Jika switch aktif, filter model memakai (RAM asli + expandable RAM) - 2GB untuk safety. Tidak disarankan: risiko OOM dan app kill oleh Android bisa meningkat.</string>
   <string name="import_supported_extensions_info" translatable="false">Supported local extensions: .task, .litertlm</string>
   <string name="import_remote_url_option" translatable="false">Register model from URL</string>
   <string name="import_unsupported_type_actionable" translatable="false">Hanya file model native ".task" atau ".litertlm" yang didukung.</string>
   <string name="import_url_explainer" translatable="false">URL boleh berupa halaman model/repo (mis. HuggingFace) atau direct download URL. URL ini dipakai untuk registrasi metadata model; proses download tetap lewat flow download app.</string>
+  <string name="refresh_dialog_title_success" translatable="false">Refresh berhasil</string>
+  <string name="refresh_dialog_title_fallback" translatable="false">Refresh dengan fallback</string>
+  <string name="refresh_dialog_title_failed" translatable="false">Refresh gagal</string>
+  <string name="refresh_before_count" translatable="false">Jumlah model sebelum: %1$d</string>
+  <string name="refresh_after_count" translatable="false">Jumlah model sesudah: %1$d</string>
+  <string name="refresh_new_count" translatable="false">Model baru: %1$d</string>
+  <string name="refresh_source_used" translatable="false">Sumber data: %1$s</string>
+  <string name="refresh_new_models_label" translatable="false">Daftar model baru: %1$s</string>
+  <string name="refresh_error_reason" translatable="false">Alasan/fallback: %1$s</string>
+  <string name="refresh_no_new_models" translatable="false">Tidak ada model baru</string>
+  <string name="refresh_source_unknown" translatable="false">UNKNOWN</string>
+  <string name="refresh_and_more" translatable="false">dan %1$d lainnya</string>
   <string name="max_tokens_warning_message" translatable="false">Setting max tokens above 10000 may cause app to be unstable.</string>
   <string name="model_is_initializing_msg" translatable="false">Initializing model…</string>
   <string name="model_list_imported_models_title" translatable="false">Imported models</string>
