@@ -175,7 +175,12 @@ fun GlobalModelManager(
       }
     }
 
-  LaunchedEffect(uiState.modelImportingUpdateTrigger) {
+  LaunchedEffect(
+    uiState.modelImportingUpdateTrigger,
+    uiState.allowlistReloadToken,
+    uiState.loadingModelAllowlist,
+    uiState.tasks,
+  ) {
     val allowlistModels = viewModel.allowlistModels
     val allowlistOrderMap = allowlistModels.withIndex().associate { it.value.name to it.index }
 
@@ -198,11 +203,16 @@ fun GlobalModelManager(
     builtInModels.addAll(sortedModels.filter { !it.imported })
     importedModels.clear()
     importedModels.addAll(sortedModels.filter { it.imported })
+    Log.d(
+      TAG,
+      "Rebuilt UI model list. builtIn=${builtInModels.size}, imported=${importedModels.size}, " +
+        "allowlistReloadToken=${uiState.allowlistReloadToken}, loading=${uiState.loadingModelAllowlist}",
+    )
   }
 
   // Calculate model variants by grouping models with a parentModelName.
   val modelVariants by
-    remember(uiState.modelImportingUpdateTrigger) {
+    remember(uiState.modelImportingUpdateTrigger, uiState.allowlistReloadToken, uiState.tasks) {
       derivedStateOf {
         val allModels = uiState.tasks.flatMap { it.models }
         allModels.filter { it.parentModelName != null }.groupBy { it.parentModelName!! }

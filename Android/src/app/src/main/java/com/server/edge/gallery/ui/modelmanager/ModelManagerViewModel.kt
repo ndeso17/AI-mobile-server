@@ -22,6 +22,7 @@ import android.app.ActivityManager
 import android.net.Uri
 import android.os.PowerManager
 import android.os.Build
+import android.os.Process
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.result.ActivityResult
@@ -183,10 +184,14 @@ data class ModelManagerUiState(
   /** The history of text inputs entered by the user. */
   val textInputHistory: List<String> = listOf(),
   val allowExpandableRamForModelFiltering: Boolean = false,
+  val useManualExpandableRamOverride: Boolean = false,
+  val manualExpandableRamGb: Double = 0.0,
   val detectedRamGb: Double = 0.0,
   val detectedExpandableRamGb: Double = 0.0,
   val effectiveRamForFilteringGb: Double = 0.0,
+  val expandableRamSourceLabel: String = "Auto(advertised)",
   val lastAllowlistRefreshResult: AllowlistRefreshResult? = null,
+  val allowlistReloadToken: Long = 0L,
   val configValuesUpdateTrigger: Long = 0L,
   // Updated when model is imported of an imported model is deleted.
   val modelImportingUpdateTrigger: Long = 0L,
@@ -249,6 +254,25 @@ constructor(
   val authService = AuthorizationService(context)
   var curAccessToken: String = ""
   private var shouldShowStartupModelPrompt = true
+  private var cachedDiscoveredSettingsExpandableGb: Double? = null
+
+  private enum class ExpandableRamSource {
+    MANUAL_OVERRIDE,
+    DISCOVERED_SETTINGS_TABLE,
+    GLOBAL_KEYS,
+    ZRAM_SYSFS,
+    PROC_SWAPS,
+    PROC_MEMINFO,
+    ADVERTISED,
+    BASELINE_TOTAL,
+  }
+
+  private data class ExpandableRamProbeResult(
+    val source: ExpandableRamSource,
+    val selectedExpandableGb: Double,
+    val reason: String,
+    val discoveredSettingsGb: Double,
+  )
 
   override fun onCleared() {
     authService.dispose()
@@ -331,6 +355,24 @@ constructor(
   fun setAllowExpandableRamForModelFiltering(allow: Boolean) {
     dataStoreRepository.setAllowExpandableRamForModelFiltering(allow)
     _uiState.update { _uiState.value.copy(allowExpandableRamForModelFiltering = allow) }
+  }
+
+  fun setUseManualExpandableRamOverride(useOverride: Boolean) {
+    dataStoreRepository.setUseManualExpandableRamOverride(useOverride)
+    _uiState.update { _uiState.value.copy(useManualExpandableRamOverride = useOverride) }
+  }
+
+  fun getUseManualExpandableRamOverride(): Boolean {
+    return dataStoreRepository.getUseManualExpandableRamOverride()
+  }
+
+  fun setManualExpandableRamGb(gb: Double) {
+    dataStoreRepository.setManualExpandableRamGb(gb)
+    _uiState.update { _uiState.value.copy(manualExpandableRamGb = gb) }
+  }
+
+  fun getManualExpandableRamGb(): Double {
+    return dataStoreRepository.getManualExpandableRamGb()
   }
 
   fun reloadAllowlistWithCurrentPolicy() {
@@ -1151,6 +1193,15 @@ constructor(
   )
 
   private fun loadModelAllowlistInternal(forceRemote: Boolean, emitRefreshResult: Boolean = false) {
+    val allowExpandableRam = dataStoreRepository.getAllowExpandableRamForModelFiltering()
+    val useManualOverride = dataStoreRepository.getUseManualExpandableRamOverride()
+    val manualExpandableRamGb = dataStoreRepository.getManualExpandableRamGb()
+    Log.d(
+      TAG,
+      "loadModelAllowlistInternal(forceRemote=$forceRemote, emitRefreshResult=$emitRefreshResult, " +
+        "allowExpandableRam=$allowExpandableRam, useManualOverride=$useManualOverride, " +
+        "manualExpandableRamGb=${"%.2f".format(manualExpandableRamGb)})",
+    )
     _uiState.update {
       uiState.value.copy(loadingModelAllowlist = true, loadingModelAllowlistError = "")
     }
@@ -1195,8 +1246,14 @@ constructor(
         }
 
         Log.d(TAG, "Allowlist: $modelAllowlist")
-        val allowExpandableRam = dataStoreRepository.getAllowExpandableRamForModelFiltering()
-        val availableDeviceMemoryGb = getAvailableDeviceMemoryGb(allowExpandableRam = allowExpandableRam)
+        val availableDeviceMemoryGb =
+          getAvailableDeviceMemoryGb(
+            allowExpandableRam = allowExpandableRam,
+            useManualOverride = useManualOverride,
+            manualExpandableRamGb = manualExpandableRamGb,
+          )
+        val totalAllowlistCount = modelAllowlist.models.count { it.disabled != true }
+        var filteredByRamCount = 0
 
         val isAICoreAvailable by lazy {
           // Build a fast-lookup set of all supported device models.
@@ -1243,6 +1300,7 @@ constructor(
           val model = allowedModel.toModel()
           val minMem = model.minDeviceMemoryInGb
           if (minMem != null && minMem.toDouble() > availableDeviceMemoryGb) {
+            filteredByRamCount += 1
             Log.d(
               TAG,
               "Ignoring model '${model.name}' due to RAM requirement ${minMem}GB > ${"%.1f".format(availableDeviceMemoryGb)}GB",
@@ -1285,15 +1343,24 @@ constructor(
         processTasks()
 
         // Update UI state.
+        val reloadToken = System.currentTimeMillis()
         _uiState.update {
           createUiState()
             .copy(
               loadingModelAllowlist = false,
               tasks = curTasks,
               tasksByCategory = groupTasksByCategory(),
+              allowlistReloadToken = reloadToken,
             )
         }
         curTasks.forEach { it.updateTrigger.value = System.currentTimeMillis() }
+        val afterCount = _allowlistModels.map { it.name }.toSet().size
+        Log.d(
+          TAG,
+          "Allowlist rebuilt. source=${allowlistLoadResult.source}, totalModels=$totalAllowlistCount, " +
+            "filteredByRam=$filteredByRamCount, availableRamGb=${"%.2f".format(availableDeviceMemoryGb)}, " +
+            "resultModels=$afterCount, allowExpandableRam=$allowExpandableRam",
+        )
 
         if (emitRefreshResult) {
           val afterNames = _allowlistModels.map { it.name }.toSet()
@@ -1409,7 +1476,12 @@ constructor(
   }
 
   private fun createUiState(): ModelManagerUiState {
-    val ramSnapshot = getDeviceMemorySnapshot(allowExpandableRam = dataStoreRepository.getAllowExpandableRamForModelFiltering())
+    val ramSnapshot =
+      getDeviceMemorySnapshot(
+        allowExpandableRam = dataStoreRepository.getAllowExpandableRamForModelFiltering(),
+        useManualOverride = dataStoreRepository.getUseManualExpandableRamOverride(),
+        manualExpandableRamGb = dataStoreRepository.getManualExpandableRamGb(),
+      )
     val modelDownloadStatus: MutableMap<String, ModelDownloadStatus> = mutableMapOf()
     val modelInstances: MutableMap<String, ModelInitializationStatus> = mutableMapOf()
     val tasks: MutableMap<String, Task> = mutableMapOf()
@@ -1490,23 +1562,43 @@ constructor(
       modelInitializationStatus = modelInstances,
       textInputHistory = textInputHistory,
       allowExpandableRamForModelFiltering = dataStoreRepository.getAllowExpandableRamForModelFiltering(),
+      useManualExpandableRamOverride = dataStoreRepository.getUseManualExpandableRamOverride(),
+      manualExpandableRamGb = dataStoreRepository.getManualExpandableRamGb(),
       detectedRamGb = ramSnapshot.totalGb,
       detectedExpandableRamGb = ramSnapshot.expandableGb,
       effectiveRamForFilteringGb = ramSnapshot.effectiveGb,
+      expandableRamSourceLabel = ramSnapshot.expandableSourceLabel,
     )
   }
 
-  private fun getAvailableDeviceMemoryGb(allowExpandableRam: Boolean): Double {
-    return getDeviceMemorySnapshot(allowExpandableRam).effectiveGb
+  private fun getAvailableDeviceMemoryGb(
+    allowExpandableRam: Boolean,
+    useManualOverride: Boolean,
+    manualExpandableRamGb: Double,
+  ): Double {
+    return getDeviceMemorySnapshot(
+        allowExpandableRam = allowExpandableRam,
+        useManualOverride = useManualOverride,
+        manualExpandableRamGb = manualExpandableRamGb,
+      )
+      .effectiveGb
   }
 
   private data class DeviceMemorySnapshot(
     val totalGb: Double,
+    val advertisedGb: Double,
+    val swapGb: Double,
+    val discoveredSettingsGb: Double,
     val expandableGb: Double,
     val effectiveGb: Double,
+    val expandableSourceLabel: String,
   )
 
-  private fun getDeviceMemorySnapshot(allowExpandableRam: Boolean): DeviceMemorySnapshot {
+  private fun getDeviceMemorySnapshot(
+    allowExpandableRam: Boolean,
+    useManualOverride: Boolean,
+    manualExpandableRamGb: Double,
+  ): DeviceMemorySnapshot {
     val activityManager =
       context.applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     val memoryInfo = ActivityManager.MemoryInfo()
@@ -1518,13 +1610,263 @@ constructor(
       } else {
         totalGb
       }
-    val effectiveGb =
-      if (allowExpandableRam) {
-        maxOf(totalGb, maxOf(totalGb, advertisedGb) - 2.0)
+    val swapFromMeminfoGb = if (advertisedGb <= totalGb) readSwapTotalGbFromProcMeminfo() else 0.0
+    val swapFromProcSwapsGb = if (advertisedGb <= totalGb) readSwapTotalGbFromProcSwaps() else 0.0
+    val swapFromZramSysfsGb = if (advertisedGb <= totalGb) readSwapTotalGbFromZramSysfs() else 0.0
+    val swapFromGlobalSettingsGb = if (advertisedGb <= totalGb) readSwapTotalGbFromGlobalSettings() else 0.0
+    val discoveredSettingsGb =
+      if (advertisedGb <= totalGb) {
+        discoverExpandableRamFromSettingsTablesCached()
+      } else {
+        0.0
+      }
+    val swapGb =
+      maxOf(
+        swapFromMeminfoGb,
+        swapFromProcSwapsGb,
+        swapFromZramSysfsGb,
+        swapFromGlobalSettingsGb,
+      )
+    val expandedCandidateGb = totalGb + swapGb
+    val manualExpandedCandidateGb =
+      if (useManualOverride && manualExpandableRamGb > 0.0) {
+        totalGb + manualExpandableRamGb
       } else {
         totalGb
       }
-    return DeviceMemorySnapshot(totalGb = totalGb, expandableGb = advertisedGb, effectiveGb = effectiveGb)
+    val discoveredSettingsCandidateGb =
+      if (discoveredSettingsGb > 0.0) totalGb + discoveredSettingsGb else totalGb
+    val probeResult =
+      chooseExpandableRamSource(
+        totalGb = totalGb,
+        advertisedGb = advertisedGb,
+        expandedCandidateGb = expandedCandidateGb,
+        discoveredSettingsCandidateGb = discoveredSettingsCandidateGb,
+        manualExpandedCandidateGb = manualExpandedCandidateGb,
+        useManualOverride = useManualOverride,
+        manualExpandableRamGb = manualExpandableRamGb,
+      )
+    val expandableGb = probeResult.selectedExpandableGb
+    val effectiveGb =
+      if (allowExpandableRam) {
+        maxOf(totalGb, expandableGb - 2.0)
+      } else {
+        totalGb
+      }
+    val effectiveSource = probeResult.source.name
+    val uid = Process.myUid()
+    Log.d(
+      TAG,
+      "Device memory snapshot: uid=$uid, base=${"%.2f".format(totalGb)}GB, " +
+        "advertised=${"%.2f".format(advertisedGb)}GB, " +
+        "swap(meminfo=${"%.2f".format(swapFromMeminfoGb)}GB, " +
+        "procSwaps=${"%.2f".format(swapFromProcSwapsGb)}GB, " +
+        "zramSysfs=${"%.2f".format(swapFromZramSysfsGb)}GB, " +
+        "globalSettings=${"%.2f".format(swapFromGlobalSettingsGb)}GB, " +
+        "selected=${"%.2f".format(swapGb)}GB), " +
+        "settingsDiscovery=${"%.2f".format(discoveredSettingsGb)}GB, " +
+        "manualOverrideEnabled=$useManualOverride, " +
+        "manualExpandableGb=${"%.2f".format(manualExpandableRamGb)}GB, " +
+        "expandableDetected=${"%.2f".format(expandableGb)}GB, " +
+        "effective=${"%.2f".format(effectiveGb)}GB, effectiveSource=$effectiveSource, " +
+        "selectedReason=${probeResult.reason}, allowExpandable=$allowExpandableRam",
+    )
+    return DeviceMemorySnapshot(
+      totalGb = totalGb,
+      advertisedGb = advertisedGb,
+      swapGb = swapGb,
+      discoveredSettingsGb = discoveredSettingsGb,
+      expandableGb = expandableGb,
+      effectiveGb = effectiveGb,
+      expandableSourceLabel = sourceLabelForUi(probeResult.source, useManualOverride),
+    )
+  }
+
+  private fun sourceLabelForUi(source: ExpandableRamSource, manualEnabled: Boolean): String {
+    return if (manualEnabled && source == ExpandableRamSource.MANUAL_OVERRIDE) {
+      "Manual Override"
+    } else {
+      "Auto(${source.name.lowercase()})"
+    }
+  }
+
+  private fun chooseExpandableRamSource(
+    totalGb: Double,
+    advertisedGb: Double,
+    expandedCandidateGb: Double,
+    discoveredSettingsCandidateGb: Double,
+    manualExpandedCandidateGb: Double,
+    useManualOverride: Boolean,
+    manualExpandableRamGb: Double,
+  ): ExpandableRamProbeResult {
+    val candidates = mutableListOf<Pair<ExpandableRamSource, Double>>()
+    candidates += ExpandableRamSource.ADVERTISED to advertisedGb
+    candidates += ExpandableRamSource.PROC_MEMINFO to expandedCandidateGb
+    candidates += ExpandableRamSource.DISCOVERED_SETTINGS_TABLE to discoveredSettingsCandidateGb
+    if (useManualOverride && manualExpandableRamGb > 0.0) {
+      candidates += ExpandableRamSource.MANUAL_OVERRIDE to manualExpandedCandidateGb
+    }
+    candidates += ExpandableRamSource.BASELINE_TOTAL to totalGb
+    val winner = candidates.maxByOrNull { it.second } ?: (ExpandableRamSource.BASELINE_TOTAL to totalGb)
+    val discoveredGb = (discoveredSettingsCandidateGb - totalGb).coerceAtLeast(0.0)
+    val reason =
+      when (winner.first) {
+        ExpandableRamSource.MANUAL_OVERRIDE -> "manual_override_enabled"
+        ExpandableRamSource.DISCOVERED_SETTINGS_TABLE -> "settings_table_discovery"
+        ExpandableRamSource.ADVERTISED -> "activity_manager_advertised_mem"
+        ExpandableRamSource.PROC_MEMINFO -> "linux_swap_candidate"
+        else -> "fallback_total_mem"
+      }
+    return ExpandableRamProbeResult(
+      source = winner.first,
+      selectedExpandableGb = winner.second,
+      reason = reason,
+      discoveredSettingsGb = discoveredGb,
+    )
+  }
+
+  private fun readSwapTotalGbFromProcMeminfo(): Double {
+    return try {
+      val meminfo = File("/proc/meminfo")
+      if (!meminfo.exists()) {
+        return 0.0
+      }
+      val swapLine = meminfo.useLines { lines ->
+        lines.firstOrNull { it.startsWith("SwapTotal:") }
+      } ?: return 0.0
+      val parts = swapLine.split(Regex("\\s+"))
+      val kb = parts.getOrNull(1)?.toDoubleOrNull() ?: return 0.0
+      kb / (1024.0 * 1024.0)
+    } catch (e: Exception) {
+      Log.w(TAG, "Failed to read SwapTotal from /proc/meminfo", e)
+      0.0
+    }
+  }
+
+  private fun readSwapTotalGbFromProcSwaps(): Double {
+    return try {
+      val swaps = File("/proc/swaps")
+      if (!swaps.exists()) {
+        return 0.0
+      }
+      val totalKb =
+        swaps.useLines { lines ->
+          lines
+            .drop(1) // header
+            .mapNotNull { line ->
+              val parts = line.trim().split(Regex("\\s+"))
+              // /proc/swaps columns: Filename Type Size Used Priority (Size in KiB)
+              parts.getOrNull(2)?.toDoubleOrNull()
+            }
+            .sum()
+        }
+      totalKb / (1024.0 * 1024.0)
+    } catch (e: Exception) {
+      Log.w(TAG, "Failed to read swap total from /proc/swaps", e)
+      0.0
+    }
+  }
+
+  private fun readSwapTotalGbFromZramSysfs(): Double {
+    return try {
+      val zramRoots =
+        File("/sys/block")
+          .listFiles()
+          ?.filter { it.isDirectory && it.name.startsWith("zram") }
+          .orEmpty()
+      if (zramRoots.isEmpty()) {
+        return 0.0
+      }
+      val totalBytes =
+        zramRoots.sumOf { zram ->
+          val diskSizeFile = File(zram, "disksize")
+          diskSizeFile.readText().trim().toLongOrNull() ?: 0L
+        }
+      totalBytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
+    } catch (e: Exception) {
+      Log.w(TAG, "Failed to read zram disk size from /sys/block/zram*/disksize", e)
+      0.0
+    }
+  }
+
+  private fun readSwapTotalGbFromGlobalSettings(): Double {
+    return try {
+      val resolver = context.contentResolver
+      val rawCandidates =
+        listOf(
+          "ram_expand_size", // Common on several OEMs, value is often in GB
+          "ram_expand_size_list",
+          "memory_extension_size",
+          "extend_mem_size",
+        )
+      val parsedValuesGb =
+        rawCandidates.mapNotNull { key ->
+          val raw = Settings.Global.getString(resolver, key)?.trim().orEmpty()
+          if (raw.isEmpty()) {
+            return@mapNotNull null
+          }
+          // Accept shapes like: "8", "8192", "0,1,2,4,6,8"
+          val numbers =
+            raw.split(Regex("[^0-9]+")).mapNotNull { it.toDoubleOrNull() }.filter { it > 0.0 }
+          if (numbers.isEmpty()) {
+            null
+          } else {
+            val maxValue = numbers.maxOrNull() ?: return@mapNotNull null
+            val normalizedGb = if (maxValue > 64.0) maxValue / 1024.0 else maxValue
+            Log.d(TAG, "Global setting '$key' detected as '$raw' => ${"%.2f".format(normalizedGb)}GB")
+            normalizedGb
+          }
+        }
+      parsedValuesGb.maxOrNull() ?: 0.0
+    } catch (e: Exception) {
+      Log.w(TAG, "Failed to read RAM expansion value from Settings.Global", e)
+      0.0
+    }
+  }
+
+  private fun discoverExpandableRamFromSettingsTablesCached(): Double {
+    cachedDiscoveredSettingsExpandableGb?.let { return it }
+    val discovered = discoverExpandableRamFromSettingsTables()
+    cachedDiscoveredSettingsExpandableGb = discovered
+    return discovered
+  }
+
+  private fun discoverExpandableRamFromSettingsTables(): Double {
+    val uris =
+      listOf(
+        Settings.Global.CONTENT_URI,
+        Settings.System.CONTENT_URI,
+        Settings.Secure.CONTENT_URI,
+      )
+    val pattern = Regex("(ram|expand|memory|swap|plus|boost)", RegexOption.IGNORE_CASE)
+    var bestGb = 0.0
+    for (uri in uris) {
+      try {
+        context.contentResolver.query(uri, arrayOf("name", "value"), null, null, null)?.use { cursor ->
+          val nameIdx = cursor.getColumnIndex("name")
+          val valueIdx = cursor.getColumnIndex("value")
+          if (nameIdx < 0 || valueIdx < 0) return@use
+          while (cursor.moveToNext()) {
+            val key = cursor.getString(nameIdx) ?: continue
+            if (!pattern.containsMatchIn(key)) continue
+            val rawValue = cursor.getString(valueIdx)?.trim().orEmpty()
+            if (rawValue.isEmpty()) continue
+            val numbers =
+              rawValue.split(Regex("[^0-9]+")).mapNotNull { it.toDoubleOrNull() }.filter { it > 0.0 }
+            if (numbers.isEmpty()) continue
+            val parsed = numbers.maxOrNull() ?: continue
+            val gb = if (parsed > 64.0) parsed / 1024.0 else parsed
+            if (gb in 1.0..24.0 && gb > bestGb) {
+              bestGb = gb
+              Log.d(TAG, "Settings table candidate: uri=$uri key=$key raw=$rawValue => ${"%.2f".format(gb)}GB")
+            }
+          }
+        }
+      } catch (e: Exception) {
+        Log.w(TAG, "Failed scanning settings uri=$uri for expandable RAM discovery", e)
+      }
+    }
+    return bestGb
   }
 
   private fun loadAllowlistWithFallback(forceRemote: Boolean): AllowlistLoadResult {

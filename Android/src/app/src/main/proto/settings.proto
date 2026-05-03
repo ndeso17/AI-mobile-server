@@ -80,6 +80,8 @@ message Settings {
   repeated string viewed_promo_id = 10;
   bool allow_expandable_ram_for_model_filtering = 11;
   string last_selected_model_name = 12;
+  bool use_manual_expandable_ram_override = 13;
+  double manual_expandable_ram_gb = 14;
 }
 
 message UserData {

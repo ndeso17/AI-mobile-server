@@ -114,6 +114,14 @@ interface DataStoreRepository {
 
   fun getAllowExpandableRamForModelFiltering(): Boolean
 
+  fun setUseManualExpandableRamOverride(useOverride: Boolean)
+
+  fun getUseManualExpandableRamOverride(): Boolean
+
+  fun setManualExpandableRamGb(gb: Double)
+
+  fun getManualExpandableRamGb(): Double
+
   fun setLastSelectedModelName(modelName: String)
 
   fun getLastSelectedModelName(): String
@@ -454,6 +462,36 @@ class DefaultDataStoreRepository(
     return runBlocking {
       val settings = dataStore.data.first()
       settings.allowExpandableRamForModelFiltering
+    }
+  }
+
+  override fun setUseManualExpandableRamOverride(useOverride: Boolean) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings.toBuilder().setUseManualExpandableRamOverride(useOverride).build()
+      }
+    }
+  }
+
+  override fun getUseManualExpandableRamOverride(): Boolean {
+    return runBlocking {
+      val settings = dataStore.data.first()
+      settings.useManualExpandableRamOverride
+    }
+  }
+
+  override fun setManualExpandableRamGb(gb: Double) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings.toBuilder().setManualExpandableRamGb(gb).build()
+      }
+    }
+  }
+
+  override fun getManualExpandableRamGb(): Double {
+    return runBlocking {
+      val settings = dataStore.data.first()
+      settings.manualExpandableRamGb
     }
   }
 

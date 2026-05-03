@@ -67,6 +67,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -106,6 +107,26 @@ fun SettingsScreen(
     var selectedTheme by remember { mutableStateOf(ThemeSettings.themeOverride.value) }
     var allowExpandableRam by remember {
         mutableStateOf(modelManagerViewModel.getAllowExpandableRamForModelFiltering())
+    }
+    var useManualExpandableOverride by remember {
+        mutableStateOf(modelManagerViewModel.getUseManualExpandableRamOverride())
+    }
+    var manualExpandableRamInput by remember {
+        val initialGb = modelManagerViewModel.getManualExpandableRamGb()
+        mutableStateOf(if (initialGb > 0.0) String.format(Locale.US, "%.1f", initialGb) else "")
+    }
+    var manualExpandableRamError by remember { mutableStateOf<String?>(null) }
+    var manualRamFieldFocused by remember { mutableStateOf(false) }
+
+    val applyManualExpandableOverride = {
+        val parsed = manualExpandableRamInput.toDoubleOrNull()
+        if (parsed == null || parsed < 0.0 || parsed > 24.0) {
+            manualExpandableRamError = context.getString(R.string.settings_manual_expandable_override_invalid)
+        } else {
+            modelManagerViewModel.setManualExpandableRamGb(parsed)
+            modelManagerViewModel.reloadAllowlistWithCurrentPolicy()
+            manualExpandableRamError = null
+        }
     }
 
     val dateFormatter = remember {
@@ -214,6 +235,89 @@ fun SettingsScreen(
                 )
             }
             Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    stringResource(R.string.settings_manual_expandable_override_toggle),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(
+                    checked = useManualExpandableOverride,
+                    enabled = !modelManagerUiState.loadingModelAllowlist,
+                    onCheckedChange = { checked ->
+                        useManualExpandableOverride = checked
+                        modelManagerViewModel.setUseManualExpandableRamOverride(checked)
+                        modelManagerViewModel.reloadAllowlistWithCurrentPolicy()
+                    },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+                BasicTextField(
+                value = manualExpandableRamInput,
+                onValueChange = { text ->
+                    if (text.isEmpty() || text.matches(Regex("^\\d{0,2}(\\.\\d{0,1})?$"))) {
+                        manualExpandableRamInput = text
+                        manualExpandableRamError = null
+                    }
+                },
+                enabled = !modelManagerUiState.loadingModelAllowlist,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                keyboardOptions = KeyboardOptions(
+                    imeAction = ImeAction.Done,
+                    keyboardType = KeyboardType.Decimal,
+                ),
+                keyboardActions = KeyboardActions(onDone = { applyManualExpandableOverride() }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                    .onFocusChanged { focusState ->
+                        val wasFocused = manualRamFieldFocused
+                        manualRamFieldFocused = focusState.isFocused
+                        if (wasFocused && !focusState.isFocused && manualExpandableRamInput.isNotBlank()) {
+                            applyManualExpandableOverride()
+                        }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                decorationBox = { innerTextField ->
+                    if (manualExpandableRamInput.isBlank()) {
+                        Text(
+                            stringResource(R.string.settings_manual_expandable_override_placeholder),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    innerTextField()
+                },
+            )
+            if (manualExpandableRamError != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    manualExpandableRamError!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(R.string.settings_manual_expandable_override_helper),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { applyManualExpandableOverride() },
+                enabled = !modelManagerUiState.loadingModelAllowlist && manualExpandableRamInput.isNotBlank(),
+                shape = RoundedCornerShape(20.dp),
+            ) {
+                Text(stringResource(R.string.settings_manual_expandable_override_apply))
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
                 stringResource(R.string.settings_detected_ram, modelManagerUiState.detectedRamGb),
                 style = MaterialTheme.typography.bodySmall,
@@ -231,6 +335,14 @@ fun SettingsScreen(
                 stringResource(
                     R.string.settings_effective_filter_ram,
                     modelManagerUiState.effectiveRamForFilteringGb
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(
+                    R.string.settings_expandable_ram_source,
+                    modelManagerUiState.expandableRamSourceLabel
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
