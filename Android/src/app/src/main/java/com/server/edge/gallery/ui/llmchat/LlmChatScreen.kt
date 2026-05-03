@@ -38,6 +38,9 @@ import androidx.compose.ui.unit.dp
 import com.server.edge.gallery.GalleryEvent
 import com.server.edge.gallery.R
 import com.server.edge.gallery.data.BuiltInTaskId
+import com.server.edge.gallery.data.ChatMode
+import com.server.edge.gallery.data.ChatPreferencesRepository
+import com.server.edge.gallery.data.KnowledgeRepository
 import com.server.edge.gallery.data.Model
 import com.server.edge.gallery.data.ModelCapability
 import com.server.edge.gallery.data.RuntimeType
@@ -47,6 +50,7 @@ import com.server.edge.gallery.ui.common.chat.ChatMessageAudioClip
 import com.server.edge.gallery.ui.common.chat.ChatMessageImage
 import com.server.edge.gallery.ui.common.chat.ChatMessageText
 import com.server.edge.gallery.ui.common.chat.ChatView
+import com.server.edge.gallery.ui.common.chat.UploadedTextFile
 import com.server.edge.gallery.ui.common.chat.SendMessageTrigger
 import com.server.edge.gallery.ui.modelmanager.ModelManagerViewModel
 import com.server.edge.gallery.ui.theme.emptyStateContent
@@ -63,6 +67,7 @@ fun LlmChatScreen(
   onFirstToken: (Model) -> Unit = {},
   onGenerateResponseDone: (Model) -> Unit = {},
   onSkillClicked: () -> Unit = {},
+  onTextFilesPicked: (List<UploadedTextFile>) -> Unit = {},
   onResetSessionClickedOverride: ((Task, Model) -> Unit)? = null,
   composableBelowMessageList: @Composable (Model) -> Unit = {},
   viewModel: LlmChatViewModel = hiltViewModel(),
@@ -73,6 +78,10 @@ fun LlmChatScreen(
   sendMessageTrigger: SendMessageTrigger? = null,
   showImagePicker: Boolean = false,
   showAudioPicker: Boolean = false,
+  chatMode: ChatMode = ChatMode.DEFAULT,
+  onChatModeChanged: (ChatMode) -> Unit = {},
+  showThinking: Boolean = false,
+  onShowThinkingChanged: (Boolean) -> Unit = {},
   getActiveSkills: () -> List<String> = { emptyList() },
   navigationIcon: @Composable (() -> Unit)? = null,
   onMessagesUpdated: (Model) -> Unit = {},
@@ -84,6 +93,7 @@ fun LlmChatScreen(
     navigateUp = navigateUp,
     modifier = modifier,
     onSkillClicked = onSkillClicked,
+    onTextFilesPicked = onTextFilesPicked,
     onFirstToken = onFirstToken,
     onGenerateResponseDone = onGenerateResponseDone,
     onResetSessionClickedOverride = onResetSessionClickedOverride,
@@ -95,6 +105,10 @@ fun LlmChatScreen(
     sendMessageTrigger = sendMessageTrigger,
     showImagePicker = showImagePicker,
     showAudioPicker = showAudioPicker,
+    chatMode = chatMode,
+    onChatModeChanged = onChatModeChanged,
+    showThinking = showThinking,
+    onShowThinkingChanged = onShowThinkingChanged,
     getActiveSkills = getActiveSkills,
     navigationIcon = navigationIcon,
     onMessagesUpdated = onMessagesUpdated,
@@ -184,6 +198,7 @@ fun ChatViewWrapper(
   navigateUp: () -> Unit,
   modifier: Modifier = Modifier,
   onSkillClicked: () -> Unit = {},
+  onTextFilesPicked: (List<UploadedTextFile>) -> Unit = {},
   onFirstToken: (Model) -> Unit = {},
   onGenerateResponseDone: (Model) -> Unit = {},
   onResetSessionClickedOverride: ((Task, Model) -> Unit)? = null,
@@ -195,11 +210,17 @@ fun ChatViewWrapper(
   sendMessageTrigger: SendMessageTrigger? = null,
   showImagePicker: Boolean = false,
   showAudioPicker: Boolean = false,
+  chatMode: ChatMode = ChatMode.DEFAULT,
+  onChatModeChanged: (ChatMode) -> Unit = {},
+  showThinking: Boolean = false,
+  onShowThinkingChanged: (Boolean) -> Unit = {},
   getActiveSkills: () -> List<String> = { emptyList() },
   navigationIcon: @Composable (() -> Unit)? = null,
   onMessagesUpdated: (Model) -> Unit = {},
 ) {
   val context = LocalContext.current
+  val knowledgeRepository = KnowledgeRepository(context)
+  val chatPreferencesRepository = ChatPreferencesRepository(context)
   val task = modelManagerViewModel.getTaskById(id = taskId) ?: return
 
   ChatView(
@@ -234,13 +255,52 @@ fun ChatViewWrapper(
         if (text.isNotEmpty()) {
           modelManagerViewModel.addTextInputHistory(text)
         }
+        val adaptiveContextBudgetChars =
+          when (model.runtimeType) {
+            RuntimeType.AICORE -> 12000
+            else -> 32000
+          }
+        val retrievedMemory =
+          knowledgeRepository.searchRelevant(text, maxContextChars = adaptiveContextBudgetChars)
+        val memoryPrompt =
+          if (retrievedMemory.isEmpty()) {
+            ""
+          } else {
+            buildString {
+              appendLine("Relevant Prior Knowledge:")
+              for (item in retrievedMemory) {
+                appendLine("- ${item.title} [${item.language}]")
+                appendLine(item.content)
+              }
+            }
+          }
+        val planningPrompt =
+          if (chatMode == ChatMode.PLAN) {
+            "Plan Mode: focus on goals, assumptions, steps, and acceptance criteria. Do not execute actions.\n\n"
+          } else {
+            ""
+          }
+        val finalInput = planningPrompt + memoryPrompt + "\n" + text
         viewModel.generateResponse(
           model = model,
-          input = text,
+          input = finalInput,
           images = images,
           audioMessages = audioMessages,
           onFirstToken = onFirstToken,
           onDone = {
+            if (chatPreferencesRepository.getAutoIngestKnowledge()) {
+              val latestAgentText =
+                (viewModel.getLastMessage(model) as? ChatMessageText)
+                  ?.takeIf { it.side == com.server.edge.gallery.ui.common.chat.ChatSide.AGENT }
+                  ?.content
+                  .orEmpty()
+              if (latestAgentText.length >= 24) {
+                knowledgeRepository.addFromChat(
+                  content = latestAgentText,
+                  title = "Assistant Response",
+                )
+              }
+            }
             onGenerateResponseDone(model)
             onMessagesUpdated(model)
           },
@@ -254,8 +314,13 @@ fun ChatViewWrapper(
             )
             onMessagesUpdated(model)
           },
-          allowThinking = task.allowCapability(ModelCapability.LLM_THINKING, model),
+          allowThinking = showThinking && task.allowCapability(ModelCapability.LLM_THINKING, model),
+          showThinking = showThinking,
         )
+        // Auto-ingest user snippets and lightweight memory for future retrieval.
+        if (chatPreferencesRepository.getAutoIngestKnowledge() && text.length >= 24) {
+          knowledgeRepository.addFromChat(content = text, title = "User Prompt")
+        }
 
         val activeSkills = getActiveSkills()
         Log.d(
@@ -293,6 +358,7 @@ fun ChatViewWrapper(
             onMessagesUpdated(model)
           },
           allowThinking = task.allowCapability(ModelCapability.LLM_THINKING, model),
+          showThinking = showThinking,
         )
       }
     },
@@ -312,11 +378,23 @@ fun ChatViewWrapper(
     showStopButtonInInputWhenInProgress = true,
     onStopButtonClicked = { model -> viewModel.stopResponse(model = model) },
     onSkillClicked = onSkillClicked,
+    onTextFilesPicked = { files ->
+      onTextFilesPicked(files)
+      if (chatPreferencesRepository.getAutoIngestKnowledge()) {
+        files.forEach { file ->
+          knowledgeRepository.addFromFile(fileName = file.fileName, content = file.content)
+        }
+      }
+    },
     navigateUp = navigateUp,
     modifier = modifier,
     composableBelowMessageList = composableBelowMessageList,
     showImagePicker = showImagePicker,
     emptyStateComposable = emptyStateComposable,
+    chatMode = chatMode,
+    onChatModeChanged = onChatModeChanged,
+    showThinking = showThinking,
+    onShowThinkingChanged = onShowThinkingChanged,
     allowEditingSystemPrompt = allowEditingSystemPrompt,
     curSystemPrompt = curSystemPrompt,
     onSystemPromptChanged = onSystemPromptChanged,

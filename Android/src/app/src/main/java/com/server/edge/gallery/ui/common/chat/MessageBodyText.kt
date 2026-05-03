@@ -20,6 +20,8 @@ package com.server.edge.gallery.ui.common.chat
 // import androidx.compose.ui.tooling.preview.Preview
 
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -38,6 +40,7 @@ import com.server.edge.gallery.ui.common.MarkdownText
 /** Composable function to display the text content of a ChatMessageText. */
 @Composable
 fun MessageBodyText(message: ChatMessageText, inProgress: Boolean) {
+  val segments = parseTextSegments(message.content)
   SelectionContainer {
     if (message.side == ChatSide.USER) {
       MarkdownText(
@@ -48,32 +51,32 @@ fun MessageBodyText(message: ChatMessageText, inProgress: Boolean) {
       )
     } else if (message.side == ChatSide.AGENT) {
       val cdResponse = stringResource(R.string.cd_model_response_text)
-      if (message.isMarkdown) {
-        MarkdownText(
-          text = message.content,
-          modifier =
-            Modifier.padding(12.dp).semantics(mergeDescendants = true) {
-              contentDescription = cdResponse
-              // Only announce when message is complete.
-              if (!inProgress) {
-                liveRegion = LiveRegionMode.Polite
+      Column(
+        modifier =
+          Modifier.padding(top = 4.dp, bottom = 8.dp).semantics(mergeDescendants = true) {
+            contentDescription = cdResponse
+            if (!inProgress) {
+              liveRegion = LiveRegionMode.Polite
+            }
+          },
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+      ) {
+        for (segment in segments) {
+          when (segment) {
+            is TextSegment.Markdown ->
+              if (message.isMarkdown) {
+                MarkdownText(text = segment.text, modifier = Modifier.padding(horizontal = 12.dp))
+              } else {
+                Text(
+                  segment.text,
+                  style = MaterialTheme.typography.bodyMedium,
+                  color = MaterialTheme.colorScheme.onSurface,
+                  modifier = Modifier.padding(horizontal = 12.dp),
+                )
               }
-            },
-        )
-      } else {
-        Text(
-          message.content,
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.onSurface,
-          modifier =
-            Modifier.padding(12.dp).semantics {
-              contentDescription = cdResponse
-              // Only announce when message is complete.
-              if (!inProgress) {
-                liveRegion = LiveRegionMode.Polite
-              }
-            },
-        )
+            is TextSegment.Code -> CodeCanvasCard(language = segment.language, code = segment.code)
+          }
+        }
       }
     }
   }

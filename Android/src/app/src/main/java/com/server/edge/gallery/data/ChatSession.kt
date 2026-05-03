@@ -24,6 +24,8 @@ data class ChatSession(
     val updatedAt: String, // ISO-8601
     val messages: List<ChatMessage>,
     val modelName: String? = null,
+    val chatMode: String = "DEFAULT",
+    val modelSwitchHistory: List<String> = emptyList(),
 ) {
     companion object {
         private val gson = Gson()

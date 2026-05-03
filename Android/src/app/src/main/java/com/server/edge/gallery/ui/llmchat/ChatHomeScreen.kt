@@ -12,12 +12,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,6 +39,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.server.edge.gallery.R
 import com.server.edge.gallery.data.BuiltInTaskId
 import com.server.edge.gallery.data.ChatSession
+import com.server.edge.gallery.data.ChatMode
+import com.server.edge.gallery.data.ChatPreferencesRepository
 import com.server.edge.gallery.data.ChatSessionRepository
 import com.server.edge.gallery.data.EMPTY_MODEL
 import com.server.edge.gallery.data.Model
@@ -59,10 +63,13 @@ fun ChatHomeScreen(
   val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
   val scope = rememberCoroutineScope()
   val repository = remember { ChatSessionRepository(context) }
+  val preferencesRepository = remember { ChatPreferencesRepository(context) }
 
   var sessions by remember { mutableStateOf(repository.loadSessions()) }
   var activeSessionId by remember { mutableStateOf(repository.getActiveChatId()) }
+  var activeChatMode by remember { mutableStateOf(repository.getActiveChatMode()) }
   var allowNextSessionRestoreForModelSelection by remember { mutableStateOf(false) }
+  var showStartupModelDialog by remember { mutableStateOf(false) }
 
   val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
   val selectedModel = modelManagerUiState.selectedModel
@@ -70,6 +77,12 @@ fun ChatHomeScreen(
     selectedModel.name != EMPTY_MODEL.name && modelManagerUiState.isModelInitialized(selectedModel)
 
   Log.d(TAG, "Compose: sessions=${sessions.size}, activeSessionId=$activeSessionId, selectedModel=${selectedModel.name}")
+
+  LaunchedEffect(modelManagerUiState.loadingModelAllowlist) {
+    if (!modelManagerUiState.loadingModelAllowlist && modelManagerViewModel.consumeStartupModelPrompt()) {
+      showStartupModelDialog = true
+    }
+  }
 
   // Refresh sessions whenever the drawer opens so the list is always up-to-date.
   LaunchedEffect(drawerState.currentValue) {
@@ -80,27 +93,20 @@ fun ChatHomeScreen(
   }
 
   LaunchedEffect(selectedModel.name, isSelectedModelInitialized) {
-    if (!isSelectedModelInitialized) {
-      if (viewModel.lastInitializedModelName == selectedModel.name) {
-        viewModel.lastInitializedModelName = null
-      }
-      return@LaunchedEffect
-    }
-
-    if (viewModel.lastInitializedModelName == selectedModel.name) return@LaunchedEffect
-    viewModel.lastInitializedModelName = selectedModel.name
-
+    if (!isSelectedModelInitialized) return@LaunchedEffect
     if (allowNextSessionRestoreForModelSelection) {
-      Log.d(TAG, "Keeping requested chat history for selected model ${selectedModel.name}")
       allowNextSessionRestoreForModelSelection = false
       return@LaunchedEffect
     }
-
-    Log.d(TAG, "Starting a new chat for freshly loaded model ${selectedModel.name}")
-    activeSessionId = null
-    repository.setActiveChatId(null)
-    viewModel.currentSessionId = null
-    viewModel.clearAllMessages(selectedModel)
+    val oldModel = viewModel.lastInitializedModelName
+    viewModel.lastInitializedModelName = selectedModel.name
+    // Cross-model continuity: copy the currently active session messages to the new model buffer.
+    if (!oldModel.isNullOrEmpty() && oldModel != selectedModel.name) {
+      val oldMessages = viewModel.uiState.value.messagesByModel[oldModel] ?: emptyList()
+      if (oldMessages.isNotEmpty()) {
+        viewModel.setMessages(selectedModel, oldMessages)
+      }
+    }
   }
 
   LaunchedEffect(activeSessionId, selectedModel.name, modelManagerUiState.modelInitializationStatus) {
@@ -124,14 +130,12 @@ fun ChatHomeScreen(
           return@LaunchedEffect
         }
 
-        val targetModel = sessionModel ?: selectedModel
+        val targetModel = selectedModel
         Log.d(TAG, "Loading session ${session.id}, model=${session.modelName}, sessionModel=${sessionModel?.name}, targetModel=${targetModel.name}, msgs=${session.messages.size}")
-        if (sessionModel != null && sessionModel.name != selectedModel.name) {
-          Log.d(TAG, "Switching model to ${sessionModel.name}")
-          modelManagerViewModel.selectModel(sessionModel)
-        }
         viewModel.currentSessionId = session.id
-        val uiMessages = session.toUiMessages()
+        activeChatMode = session.toChatMode()
+        repository.setActiveChatMode(activeChatMode)
+        val uiMessages = session.toUiMessages(showThinking = preferencesRepository.getShowThinking())
         Log.d(TAG, "Converted to ${uiMessages.size} UI messages")
         viewModel.setMessages(targetModel, uiMessages)
       } else {
@@ -153,7 +157,8 @@ fun ChatHomeScreen(
   fun saveCurrentSession(model: Model) {
     scope.launch {
       val messages = viewModel.uiState.value.messagesByModel[model.name] ?: return@launch
-      val dataMessages = messages.toDataMessages()
+      val includeThinkingInHistory = preferencesRepository.getShowThinking()
+      val dataMessages = messages.toDataMessages(includeThinking = includeThinkingInHistory)
       Log.d(TAG, "saveCurrentSession: model=${model.name}, uiMsgs=${messages.size}, dataMsgs=${dataMessages.size}")
       if (dataMessages.isEmpty()) return@launch
 
@@ -161,7 +166,7 @@ fun ChatHomeScreen(
       val existingSession = existingSessionId?.let { id -> sessions.find { it.id == id } }
 
       val sessionId =
-        if (existingSession != null && existingSession.modelName == model.name) {
+        if (existingSession != null) {
           Log.d(TAG, "Reusing existing session $existingSessionId")
           existingSessionId
         } else {
@@ -182,6 +187,11 @@ fun ChatHomeScreen(
           updatedAt = java.time.Instant.now().toString(),
           messages = dataMessages,
           modelName = model.name,
+          chatMode = activeChatMode.name,
+          modelSwitchHistory =
+            ((existingSession?.modelSwitchHistory ?: emptyList()).let { history ->
+              if (history.lastOrNull() == model.name) history else history + model.name
+            }),
         )
       repository.upsertSession(session)
       Log.d(TAG, "Upserted session $sessionId with ${dataMessages.size} messages")
@@ -236,6 +246,13 @@ fun ChatHomeScreen(
       viewModel = viewModel,
       showImagePicker = true,
       showAudioPicker = true,
+      chatMode = activeChatMode,
+      onChatModeChanged = {
+        activeChatMode = it
+        repository.setActiveChatMode(it)
+      },
+      showThinking = preferencesRepository.getShowThinking(),
+      onShowThinkingChanged = { preferencesRepository.setShowThinking(it) },
       navigationIcon = navigationIcon,
       onMessagesUpdated = { model -> saveCurrentSession(model) },
       emptyStateComposable = { model ->
@@ -243,6 +260,49 @@ fun ChatHomeScreen(
           NoModelEmptyState()
         } else {
           DefaultChatEmptyState()
+        }
+      },
+    )
+  }
+
+  if (showStartupModelDialog) {
+    val lastSelectedModelName = modelManagerViewModel.getLastSelectedModelName()
+    val chatTask = modelManagerViewModel.getTaskById(BuiltInTaskId.LLM_CHAT)
+    val lastModel = chatTask?.models?.firstOrNull { it.name == lastSelectedModelName }
+    val hasLastModel = !lastSelectedModelName.isBlank() && lastModel != null
+
+    AlertDialog(
+      onDismissRequest = {},
+      title = { Text("Load model") },
+      text = {
+        if (hasLastModel) {
+          Text("App reopened. Load last model \"$lastSelectedModelName\" or choose another model?")
+        } else {
+          Text("App reopened. Last model tidak tersedia/kompatibel. Silakan pilih model lain.")
+        }
+      },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            showStartupModelDialog = false
+            if (lastModel != null) {
+              modelManagerViewModel.selectModel(lastModel)
+            } else {
+              onGoToModels()
+            }
+          }
+        ) {
+          Text(if (hasLastModel) "Load last model" else "Choose model")
+        }
+      },
+      dismissButton = {
+        TextButton(
+          onClick = {
+            showStartupModelDialog = false
+            onGoToModels()
+          }
+        ) {
+          Text("Choose another model")
         }
       },
     )

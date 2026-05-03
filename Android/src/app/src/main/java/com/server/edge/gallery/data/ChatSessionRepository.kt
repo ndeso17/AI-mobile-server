@@ -12,6 +12,7 @@ class ChatSessionRepository(context: Context) {
         private const val PREFS_NAME = "chat_sessions_prefs"
         private const val KEY_SESSIONS = "chat_sessions"
         private const val KEY_ACTIVE_CHAT_ID = "active_chat_id"
+        private const val KEY_ACTIVE_CHAT_MODE = "active_chat_mode"
     }
 
     private val prefs: SharedPreferences =
@@ -57,5 +58,14 @@ class ChatSessionRepository(context: Context) {
         } else {
             prefs.edit().putString(KEY_ACTIVE_CHAT_ID, id).apply()
         }
+    }
+
+    fun getActiveChatMode(): ChatMode {
+        val raw = prefs.getString(KEY_ACTIVE_CHAT_MODE, ChatMode.DEFAULT.name) ?: ChatMode.DEFAULT.name
+        return runCatching { ChatMode.valueOf(raw) }.getOrDefault(ChatMode.DEFAULT)
+    }
+
+    fun setActiveChatMode(mode: ChatMode) {
+        prefs.edit().putString(KEY_ACTIVE_CHAT_MODE, mode.name).apply()
     }
 }

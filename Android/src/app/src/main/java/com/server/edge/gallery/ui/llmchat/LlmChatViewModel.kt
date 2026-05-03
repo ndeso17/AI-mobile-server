@@ -33,6 +33,7 @@ import com.server.edge.gallery.ui.common.chat.ChatMessageType
 import com.server.edge.gallery.ui.common.chat.ChatMessageWarning
 import com.server.edge.gallery.ui.common.chat.ChatSide
 import com.server.edge.gallery.ui.common.chat.ChatViewModel
+import com.server.edge.gallery.ui.modelmanager.CleanupReason
 import com.server.edge.gallery.ui.modelmanager.ModelManagerViewModel
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ExperimentalApi
@@ -47,6 +48,8 @@ private const val TAG = "AGLlmChatViewModel"
 
 @OptIn(ExperimentalApi::class)
 open class LlmChatViewModelBase() : ChatViewModel() {
+  private val errorRecoveryRetryCountByModel: MutableMap<String, Int> = mutableMapOf()
+
   fun generateResponse(
     model: Model,
     input: String,
@@ -56,6 +59,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     onDone: () -> Unit = {},
     onError: (String) -> Unit,
     allowThinking: Boolean = false,
+    showThinking: Boolean = false,
   ) {
     val accelerator = model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = "")
     viewModelScope.launch(Dispatchers.Default) {
@@ -99,7 +103,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
               var currentLastMessage = getLastMessage(model = model)
 
               // If thinking is enabled, add a thinking message.
-              if (isThinking) {
+              if (showThinking && isThinking) {
                 if (currentLastMessage?.type != ChatMessageType.THINKING) {
                   addMessage(
                     model = model,
@@ -192,6 +196,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                     )
                   }
                 }
+                errorRecoveryRetryCountByModel[model.name] = 0
                 setInProgress(false)
                 onDone()
               }
@@ -285,7 +290,8 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     model: Model,
     message: ChatMessageText,
     onError: (String) -> Unit,
-    allowThinking: Boolean = false,
+      allowThinking: Boolean = false,
+    showThinking: Boolean = false,
   ) {
     viewModelScope.launch(Dispatchers.Default) {
       // Wait for model to be initialized.
@@ -302,6 +308,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         input = message.content,
         onError = onError,
         allowThinking = allowThinking,
+        showThinking = showThinking,
       )
     }
   }
@@ -321,12 +328,24 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     // Show error message.
     addMessage(model = model, message = ChatMessageError(content = errorMessage))
 
-    // Clean up and re-initialize.
+    val currentRetryCount = errorRecoveryRetryCountByModel[model.name] ?: 0
+    if (currentRetryCount >= 1) {
+      addMessage(
+        model = model,
+        message = ChatMessageWarning(content = "Auto recovery stopped after 1 retry"),
+      )
+      return
+    }
+
+    errorRecoveryRetryCountByModel[model.name] = currentRetryCount + 1
+
+    // Clean up and re-initialize once.
     viewModelScope.launch(Dispatchers.Default) {
       modelManagerViewModel.cleanupModel(
         context = context,
         task = task,
         model = model,
+        reason = CleanupReason.ERROR_RECOVERY,
         onDone = {
           modelManagerViewModel.initializeModel(context = context, task = task, model = model)
 

@@ -37,7 +37,7 @@ android {
     minSdk = 31
     targetSdk = 35
     versionCode = 27
-    versionName = "1.0.12"
+    versionName = "1.0.12-mrksvt"
 
     // Needed for HuggingFace auth workflows.
     // Use the scheme of the "Redirect URLs" in HuggingFace app.
@@ -145,4 +145,3 @@ protobuf {
   protoc { artifact = "com.google.protobuf:protoc:4.26.1" }
   generateProtoTasks { all().forEach { it.plugins { create("java") { option("lite") } } } }
 }
-

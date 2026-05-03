@@ -52,7 +52,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,16 +62,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.server.edge.gallery.R
 import com.server.edge.gallery.data.BuiltInTaskId
+import com.server.edge.gallery.data.ChatMode
 import com.server.edge.gallery.data.ConfigKeys
 import com.server.edge.gallery.data.EMPTY_MODEL
 import com.server.edge.gallery.data.Model
 import com.server.edge.gallery.data.ModelDownloadStatusType
 import com.server.edge.gallery.data.Task
 import com.server.edge.gallery.ui.common.ModelPageAppBar
+import com.server.edge.gallery.ui.modelmanager.CleanupReason
 import com.server.edge.gallery.ui.modelmanager.ModelInitializationStatusType
 import com.server.edge.gallery.ui.modelmanager.ModelManagerViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 private const val TAG = "AGChatView"
 
@@ -101,10 +100,15 @@ fun ChatView(
   onStreamImageMessage: (Model, ChatMessageImage) -> Unit = { _, _ -> },
   onStopButtonClicked: (Model) -> Unit = {},
   onSkillClicked: () -> Unit = {},
+  onTextFilesPicked: (List<UploadedTextFile>) -> Unit = {},
   showStopButtonInInputWhenInProgress: Boolean = false,
   composableBelowMessageList: @Composable (Model) -> Unit = {},
   showImagePicker: Boolean = false,
   showAudioPicker: Boolean = false,
+  chatMode: ChatMode = ChatMode.DEFAULT,
+  onChatModeChanged: (ChatMode) -> Unit = {},
+  showThinking: Boolean = false,
+  onShowThinkingChanged: (Boolean) -> Unit = {},
   emptyStateComposable: @Composable (Model) -> Unit = {},
   allowEditingSystemPrompt: Boolean = false,
   curSystemPrompt: String = "",
@@ -131,19 +135,11 @@ fun ChatView(
   var showImageViewer by remember { mutableStateOf(false) }
 
   val context = LocalContext.current
-  val scope = rememberCoroutineScope()
   var navigatingUp by remember { mutableStateOf(false) }
 
   val handleNavigateUp = {
     navigatingUp = true
     navigateUp()
-
-    // clean up all models.
-    scope.launch(Dispatchers.Default) {
-      for (model in task.models) {
-        modelManagerViewModel.cleanupModel(context = context, task = task, model = model)
-      }
-    }
   }
 
   // Do not initialize from the chat screen. Loading should only happen from an explicit user action
@@ -205,7 +201,12 @@ fun ChatView(
         onBackClicked = { handleNavigateUp() },
         onModelSelected = { prevModel, curModel ->
           if (prevModel.name != curModel.name) {
-            modelManagerViewModel.cleanupModel(context = context, task = task, model = prevModel)
+            modelManagerViewModel.cleanupModel(
+              context = context,
+              task = task,
+              model = prevModel,
+              reason = CleanupReason.MODEL_SWITCH,
+            )
           }
           modelManagerViewModel.selectModel(model = curModel)
         },
@@ -262,10 +263,15 @@ fun ChatView(
                   showImageViewer = true
                 },
                 onSkillClicked = onSkillClicked,
+                onTextFilesPicked = onTextFilesPicked,
                 modifier = Modifier.weight(1f),
                 showStopButtonInInputWhenInProgress = showStopButtonInInputWhenInProgress,
                 showImagePicker = showImagePicker,
                 showAudioPicker = showAudioPicker,
+                chatMode = chatMode,
+                onChatModeChanged = onChatModeChanged,
+                showThinking = showThinking,
+                onShowThinkingChanged = onShowThinkingChanged,
                 emptyStateComposable = emptyStateComposable,
                 inputEnabled = hasChatModel && isSelectedModelInitialized,
               )

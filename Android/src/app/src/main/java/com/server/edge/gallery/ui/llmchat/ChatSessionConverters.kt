@@ -1,6 +1,7 @@
 package com.server.edge.gallery.ui.llmchat
 
 import com.server.edge.gallery.data.ChatMessage as DataChatMessage
+import com.server.edge.gallery.data.ChatMode
 import com.server.edge.gallery.data.ChatSession
 import com.server.edge.gallery.ui.common.chat.ChatMessage as UiChatMessage
 import com.server.edge.gallery.ui.common.chat.ChatMessageError
@@ -9,13 +10,13 @@ import com.server.edge.gallery.ui.common.chat.ChatMessageThinking
 import com.server.edge.gallery.ui.common.chat.ChatSide
 import java.util.UUID
 
-fun ChatSession.toUiMessages(): List<UiChatMessage> {
+fun ChatSession.toUiMessages(showThinking: Boolean = false): List<UiChatMessage> {
   android.util.Log.d("AGChatConverters", "toUiMessages: ${messages.size} data messages")
   return messages.map { msg ->
     when (msg.role) {
       "user" -> ChatMessageText(content = msg.text, side = ChatSide.USER)
       "assistant" -> {
-        if (msg.thinking.isNotEmpty()) {
+        if (showThinking && msg.thinking.isNotEmpty()) {
           ChatMessageThinking(
             content = msg.thinking,
             inProgress = false,
@@ -32,7 +33,7 @@ fun ChatSession.toUiMessages(): List<UiChatMessage> {
   }
 }
 
-fun List<UiChatMessage>.toDataMessages(): List<DataChatMessage> {
+fun List<UiChatMessage>.toDataMessages(includeThinking: Boolean = true): List<DataChatMessage> {
   val result = mapIndexedNotNull { index, msg ->
     when (msg) {
       is ChatMessageText -> {
@@ -58,6 +59,9 @@ fun List<UiChatMessage>.toDataMessages(): List<DataChatMessage> {
         )
       }
       is ChatMessageThinking -> {
+        if (!includeThinking) {
+          return@mapIndexedNotNull null
+        }
         DataChatMessage(
           id = index.toString(),
           role = "assistant",
@@ -83,3 +87,7 @@ fun generateChatTitle(messages: List<DataChatMessage>): String {
 }
 
 fun generateSessionId(): String = UUID.randomUUID().toString()
+
+fun ChatSession.toChatMode(): ChatMode {
+  return runCatching { ChatMode.valueOf(chatMode) }.getOrDefault(ChatMode.DEFAULT)
+}

@@ -78,6 +78,8 @@ message Settings {
   // copybara:strip_end
 
   repeated string viewed_promo_id = 10;
+  bool allow_expandable_ram_for_model_filtering = 11;
+  string last_selected_model_name = 12;
 }
 
 message UserData {
@@ -133,4 +135,3 @@ message Cutout {
 message CutoutCollection {
   repeated Cutout cutout = 1;
 }
-

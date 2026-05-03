@@ -82,6 +82,7 @@ import com.server.edge.gallery.ui.common.ModelPageAppBar
 import com.server.edge.gallery.ui.common.chat.ModelDownloadStatusInfoPanel
 import com.server.edge.gallery.ui.home.HomeScreen
 import com.server.edge.gallery.ui.home.PromoScreenGm4
+import com.server.edge.gallery.ui.modelmanager.CleanupReason
 import com.server.edge.gallery.ui.modelmanager.GlobalModelManager
 import com.server.edge.gallery.ui.modelmanager.ModelInitializationStatusType
 import com.server.edge.gallery.ui.modelmanager.ModelManager
@@ -251,8 +252,6 @@ fun GalleryNavHost(
     ) { backStackEntry ->
       val modelName = backStackEntry.arguments?.getString("modelName") ?: ""
       val taskId = backStackEntry.arguments?.getString("taskId") ?: ""
-      val scope = rememberCoroutineScope()
-      val context = LocalContext.current
 
       modelManagerViewModel.getModelByName(name = modelName)?.let { initialModel ->
         if (lastNavigatedModelName != modelName) {
@@ -288,19 +287,6 @@ fun GalleryNavHost(
                   enableModelListAnimation = false
                   lastNavigatedModelName = ""
                   navController.navigateUp()
-
-                  // clean up all models.
-                  for (curModel in customTask.task.models) {
-                    val instanceToCleanUp = curModel.instance
-                    scope.launch(Dispatchers.Default) {
-                      modelManagerViewModel.cleanupModel(
-                        context = context,
-                        task = customTask.task,
-                        model = curModel,
-                        instanceToCleanUp = instanceToCleanUp,
-                      )
-                    }
-                  }
                 }
               },
               disableAppBarControls = disableAppBarControls,
@@ -489,6 +475,7 @@ private fun CustomTaskScreen(
                   task = task,
                   model = prevModel,
                   instanceToCleanUp = instanceToCleanUp,
+                  reason = CleanupReason.MODEL_SWITCH,
                 )
               }
 

@@ -87,6 +87,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedIconButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -127,6 +128,7 @@ import com.server.edge.gallery.common.AudioClip
 import com.server.edge.gallery.common.convertWavToMonoWithMaxSeconds
 import com.server.edge.gallery.common.decodeSampledBitmapFromUri
 import com.server.edge.gallery.common.rotateBitmap
+import com.server.edge.gallery.data.ChatMode
 import com.server.edge.gallery.data.MAX_AUDIO_CLIP_COUNT
 import com.server.edge.gallery.data.MAX_IMAGE_COUNT
 import com.server.edge.gallery.data.MAX_IMAGE_COUNT_AI_CORE
@@ -142,6 +144,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 private const val TAG = "AGMessageInputText"
+private const val MAX_TEXT_FILE_BYTES = 256 * 1024
+
+data class UploadedTextFile(
+  val fileName: String,
+  val content: String,
+)
 
 /**
  * Composable function to display a text input field for composing chat messages.
@@ -171,10 +179,15 @@ fun MessageInputText(
   onSkillsClicked: () -> Unit = {},
   onPickedImagesChanged: (List<Bitmap>) -> Unit = {},
   onPickedAudioClipsChanged: (List<AudioClip>) -> Unit = {},
+  onTextFilesPicked: (List<UploadedTextFile>) -> Unit = {},
   showPromptTemplatesInMenu: Boolean = false,
   showSkillsPicker: Boolean = false,
   showImagePicker: Boolean = false,
   showAudioPicker: Boolean = false,
+  chatMode: ChatMode = ChatMode.DEFAULT,
+  onChatModeChanged: (ChatMode) -> Unit = {},
+  showThinking: Boolean = false,
+  onShowThinkingChanged: (Boolean) -> Unit = {},
   showStopButtonWhenInProgress: Boolean = false,
   onImageLimitExceeded: () -> Unit = {},
   inputEnabled: Boolean = true,
@@ -304,6 +317,18 @@ fun MessageInputText(
       }
     }
 
+  val pickTextFiles =
+    rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+      if (uris.isNotEmpty()) {
+        scope.launch(Dispatchers.IO) {
+          val parsedFiles = uris.mapNotNull { uri -> readTextFileFromUri(context, uri) }
+          if (parsedFiles.isNotEmpty()) {
+            onTextFilesPicked(parsedFiles)
+          }
+        }
+      }
+    }
+
   DisposableEffect(lifecycleOwner) {
     lifecycleOwner.lifecycle.addObserver(sensorObserver)
     onDispose { lifecycleOwner.lifecycle.removeObserver(sensorObserver) }
@@ -430,6 +455,26 @@ fun MessageInputText(
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                  OutlinedButton(
+                    onClick = {
+                      onChatModeChanged(
+                        if (chatMode == ChatMode.DEFAULT) ChatMode.PLAN else ChatMode.DEFAULT
+                      )
+                    },
+                    enabled = inputEnabled && !inProgress && !isResettingSession && !modelInitializing,
+                  ) {
+                    Text(if (chatMode == ChatMode.PLAN) "Plan" else "Default")
+                  }
+
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Thinking", style = bodyLargeNarrow)
+                    Switch(
+                      checked = showThinking,
+                      onCheckedChange = { onShowThinkingChanged(it) },
+                      enabled = inputEnabled && !inProgress && !isResettingSession && !modelInitializing,
+                    )
+                  }
+
                   // A plus button to show a popup menu to add stuff to the chat.
                   Box() {
                     val enableAddButton =
@@ -605,6 +650,30 @@ fun MessageInputText(
                           },
                         )
                       }
+
+                      DropdownMenuItem(
+                        text = {
+                          Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                          ) {
+                            Icon(Icons.Rounded.AudioFile, contentDescription = null)
+                            Text("Attach text/code file")
+                          }
+                        },
+                        enabled = inputEnabled && !inProgress && !isResettingSession,
+                        onClick = {
+                          pickTextFiles.launch(
+                            arrayOf(
+                              "text/*",
+                              "application/json",
+                              "application/xml",
+                              "application/javascript",
+                            )
+                          )
+                          showAddContentMenu = false
+                        },
+                      )
 
                       // Prompt history.
                       DropdownMenuItem(
@@ -991,6 +1060,23 @@ private fun handleAudioWavSelected(
 ) {
   convertWavToMonoWithMaxSeconds(context = context, stereoUri = uri)?.let { audioClip ->
     onAudioSelected(audioClip)
+  }
+}
+
+private fun readTextFileFromUri(context: Context, uri: Uri): UploadedTextFile? {
+  return try {
+    val content =
+      context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
+        val buf = CharArray(MAX_TEXT_FILE_BYTES)
+        val size = reader.read(buf, 0, buf.size)
+        if (size <= 0) "" else String(buf, 0, size)
+      } ?: return null
+    if (content.isBlank()) return null
+    val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "uploaded_file.txt"
+    UploadedTextFile(fileName = fileName, content = content.trim())
+  } catch (e: Exception) {
+    Log.w(TAG, "Failed to read text file from uri: $uri", e)
+    null
   }
 }
 

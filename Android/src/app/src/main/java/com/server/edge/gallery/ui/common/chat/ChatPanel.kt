@@ -87,6 +87,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.server.edge.gallery.R
 import com.server.edge.gallery.data.BuiltInTaskId
+import com.server.edge.gallery.data.ChatMode
 import com.server.edge.gallery.data.Model
 import com.server.edge.gallery.data.Task
 import com.server.edge.gallery.ui.common.AudioAnimation
@@ -117,9 +118,14 @@ fun ChatPanel(
   onStopButtonClicked: () -> Unit = {},
   onSkillClicked: () -> Unit = {},
   onImageSelected: (bitmaps: List<Bitmap>, selectedBitmapIndex: Int) -> Unit = { _, _ -> },
+  onTextFilesPicked: (List<UploadedTextFile>) -> Unit = {},
   showStopButtonInInputWhenInProgress: Boolean = false,
   showImagePicker: Boolean = false,
   showAudioPicker: Boolean = false,
+  chatMode: ChatMode = ChatMode.DEFAULT,
+  onChatModeChanged: (ChatMode) -> Unit = {},
+  showThinking: Boolean = false,
+  onShowThinkingChanged: (Boolean) -> Unit = {},
   emptyStateComposable: @Composable (Model) -> Unit = {},
   inputEnabled: Boolean = true,
 ) {
@@ -581,10 +587,15 @@ fun ChatPanel(
         onSkillsClicked = onSkillClicked,
         onPickedImagesChanged = { pickedImagesCount = it.size },
         onPickedAudioClipsChanged = { pickedAudioClipsCount = it.size },
+        onTextFilesPicked = onTextFilesPicked,
         showPromptTemplatesInMenu = false,
         showSkillsPicker = task.id === BuiltInTaskId.LLM_AGENT_CHAT,
         showImagePicker = inputEnabled && selectedModel.llmSupportImage && showImagePicker,
         showAudioPicker = inputEnabled && selectedModel.llmSupportAudio && showAudioPicker,
+        chatMode = chatMode,
+        onChatModeChanged = onChatModeChanged,
+        showThinking = showThinking,
+        onShowThinkingChanged = onShowThinkingChanged,
         showStopButtonWhenInProgress = showStopButtonInInputWhenInProgress,
         onImageLimitExceeded = { showImageLimitBanner = true },
         inputEnabled = inputEnabled && isSelectedModelInitialized,

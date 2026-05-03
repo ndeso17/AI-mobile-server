@@ -109,6 +109,14 @@ interface DataStoreRepository {
 
   /** Returns whether a promo with the specified ID has been viewed. */
   fun hasViewedPromo(promoId: String): Boolean
+
+  fun setAllowExpandableRamForModelFiltering(allow: Boolean)
+
+  fun getAllowExpandableRamForModelFiltering(): Boolean
+
+  fun setLastSelectedModelName(modelName: String)
+
+  fun getLastSelectedModelName(): String
 }
 
 /** Repository for managing data using Proto DataStore. */
@@ -431,6 +439,34 @@ class DefaultDataStoreRepository(
     return runBlocking {
       val settings = dataStore.data.first()
       settings.viewedPromoIdList.contains(promoId)
+    }
+  }
+
+  override fun setAllowExpandableRamForModelFiltering(allow: Boolean) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings.toBuilder().setAllowExpandableRamForModelFiltering(allow).build()
+      }
+    }
+  }
+
+  override fun getAllowExpandableRamForModelFiltering(): Boolean {
+    return runBlocking {
+      val settings = dataStore.data.first()
+      settings.allowExpandableRamForModelFiltering
+    }
+  }
+
+  override fun setLastSelectedModelName(modelName: String) {
+    runBlocking {
+      dataStore.updateData { settings -> settings.toBuilder().setLastSelectedModelName(modelName).build() }
+    }
+  }
+
+  override fun getLastSelectedModelName(): String {
+    return runBlocking {
+      val settings = dataStore.data.first()
+      settings.lastSelectedModelName
     }
   }
 }

@@ -21,6 +21,7 @@ import android.content.Intent
 import android.app.ActivityManager
 import android.net.Uri
 import android.os.PowerManager
+import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.result.ActivityResult
@@ -110,6 +111,14 @@ enum class ModelInitializationStatusType {
   ERROR,
 }
 
+enum class CleanupReason {
+  NAVIGATION,
+  MODEL_SWITCH,
+  EXPLICIT_UNLOAD,
+  ERROR_RECOVERY,
+  INTERNAL_MEMORY_POLICY,
+}
+
 enum class TokenStatus {
   NOT_STORED,
   EXPIRED,
@@ -150,6 +159,7 @@ data class ModelManagerUiState(
 
   /** The history of text inputs entered by the user. */
   val textInputHistory: List<String> = listOf(),
+  val allowExpandableRamForModelFiltering: Boolean = false,
   val configValuesUpdateTrigger: Long = 0L,
   // Updated when model is imported of an imported model is deleted.
   val modelImportingUpdateTrigger: Long = 0L,
@@ -211,6 +221,7 @@ constructor(
 
   val authService = AuthorizationService(context)
   var curAccessToken: String = ""
+  private var shouldShowStartupModelPrompt = true
 
   override fun onCleared() {
     authService.dispose()
@@ -286,6 +297,29 @@ constructor(
   fun selectModel(model: Model) {
     if (_uiState.value.selectedModel.name != model.name) {
       _uiState.update { _uiState.value.copy(selectedModel = model) }
+    }
+    dataStoreRepository.setLastSelectedModelName(model.name)
+  }
+
+  fun setAllowExpandableRamForModelFiltering(allow: Boolean) {
+    dataStoreRepository.setAllowExpandableRamForModelFiltering(allow)
+    _uiState.update { _uiState.value.copy(allowExpandableRamForModelFiltering = allow) }
+  }
+
+  fun getAllowExpandableRamForModelFiltering(): Boolean {
+    return dataStoreRepository.getAllowExpandableRamForModelFiltering()
+  }
+
+  fun getLastSelectedModelName(): String {
+    return dataStoreRepository.getLastSelectedModelName()
+  }
+
+  fun consumeStartupModelPrompt(): Boolean {
+    return if (shouldShowStartupModelPrompt) {
+      shouldShowStartupModelPrompt = false
+      true
+    } else {
+      false
     }
   }
 
@@ -533,6 +567,7 @@ constructor(
     model: Model,
     instanceToCleanUp: Any? = model.instance,
     explicitUserUnload: Boolean = false,
+    reason: CleanupReason = CleanupReason.INTERNAL_MEMORY_POLICY,
     onDone: () -> Unit = {},
   ) {
     if (explicitUserUnload) {
@@ -550,7 +585,7 @@ constructor(
 
     if (model.instance != null) {
       model.cleanUpAfterInit = false
-      Log.d(TAG, "Cleaning up model '${model.name}'...")
+      Log.d(TAG, "Cleaning up model '${model.name}' (reason=$reason)...")
       val onDoneFn: () -> Unit = {
         model.instance = null
         model.initializing = false
@@ -601,6 +636,7 @@ constructor(
         task = task,
         model = model,
         explicitUserUnload = true,
+        reason = CleanupReason.EXPLICIT_UNLOAD,
       )
     }
     if (loadedModels.isEmpty()) {
@@ -1132,6 +1168,8 @@ constructor(
         }
 
         Log.d(TAG, "Allowlist: $modelAllowlist")
+        val allowExpandableRam = dataStoreRepository.getAllowExpandableRamForModelFiltering()
+        val availableDeviceMemoryGb = getAvailableDeviceMemoryGb(allowExpandableRam = allowExpandableRam)
 
         val isAICoreAvailable by lazy {
           // Build a fast-lookup set of all supported device models.
@@ -1175,6 +1213,14 @@ constructor(
           }
 
           val model = allowedModel.toModel()
+          val minMem = model.minDeviceMemoryInGb
+          if (minMem != null && minMem.toDouble() > availableDeviceMemoryGb) {
+            Log.d(
+              TAG,
+              "Ignoring model '${model.name}' due to RAM requirement ${minMem}GB > ${"%.1f".format(availableDeviceMemoryGb)}GB",
+            )
+            continue
+          }
           _allowlistModels.add(model)
           nameToModel.put(model.name, model)
           for (taskType in allowedModel.taskTypes) {
@@ -1371,7 +1417,26 @@ constructor(
       modelDownloadStatus = modelDownloadStatus,
       modelInitializationStatus = modelInstances,
       textInputHistory = textInputHistory,
+      allowExpandableRamForModelFiltering = dataStoreRepository.getAllowExpandableRamForModelFiltering(),
     )
+  }
+
+  private fun getAvailableDeviceMemoryGb(allowExpandableRam: Boolean): Double {
+    val activityManager =
+      context.applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    val memoryInfo = ActivityManager.MemoryInfo()
+    activityManager.getMemoryInfo(memoryInfo)
+    val totalGb = memoryInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
+    if (!allowExpandableRam) {
+      return totalGb
+    }
+    val advertisedGb =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        memoryInfo.advertisedMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
+      } else {
+        totalGb
+      }
+    return maxOf(totalGb, advertisedGb)
   }
 
   private fun createModelFromImportedModelInfo(info: ImportedModel): Model {

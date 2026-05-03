@@ -46,6 +46,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -99,6 +100,9 @@ fun SettingsScreen(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     var selectedTheme by remember { mutableStateOf(ThemeSettings.themeOverride.value) }
+    var allowExpandableRam by remember {
+        mutableStateOf(modelManagerViewModel.getAllowExpandableRamForModelFiltering())
+    }
 
     val dateFormatter = remember {
         DateTimeFormatter.ofPattern("yyyy-MM-dd")
@@ -177,6 +181,39 @@ fun SettingsScreen(
                     )
                 }
             }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        SettingsCard(
+            icon = Icons.Outlined.Info,
+            title = "Model Compatibility",
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    "Gunakan expandable RAM untuk kompatibilitas model (Critical)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(
+                    checked = allowExpandableRam,
+                    onCheckedChange = { checked ->
+                        allowExpandableRam = checked
+                        modelManagerViewModel.setAllowExpandableRamForModelFiltering(checked)
+                        modelManagerViewModel.loadModelAllowlist()
+                    },
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Tidak disarankan. Risiko OOM dan app kill oleh Android bisa meningkat.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         Spacer(Modifier.height(12.dp))
