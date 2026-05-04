@@ -125,6 +125,10 @@ interface DataStoreRepository {
   fun setLastSelectedModelName(modelName: String)
 
   fun getLastSelectedModelName(): String
+
+  fun setRouterAllowedModelNames(modelNames: Set<String>)
+
+  fun getRouterAllowedModelNames(): Set<String>
 }
 
 /** Repository for managing data using Proto DataStore. */
@@ -505,6 +509,25 @@ class DefaultDataStoreRepository(
     return runBlocking {
       val settings = dataStore.data.first()
       settings.lastSelectedModelName
+    }
+  }
+
+  override fun setRouterAllowedModelNames(modelNames: Set<String>) {
+    runBlocking {
+      dataStore.updateData { settings ->
+        settings
+          .toBuilder()
+          .clearRouterAllowedModelName()
+          .addAllRouterAllowedModelName(modelNames.sorted())
+          .build()
+      }
+    }
+  }
+
+  override fun getRouterAllowedModelNames(): Set<String> {
+    return runBlocking {
+      val settings = dataStore.data.first()
+      settings.routerAllowedModelNameList.toSet()
     }
   }
 }

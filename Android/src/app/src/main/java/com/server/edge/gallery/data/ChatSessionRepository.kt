@@ -13,6 +13,7 @@ class ChatSessionRepository(context: Context) {
         private const val KEY_SESSIONS = "chat_sessions"
         private const val KEY_ACTIVE_CHAT_ID = "active_chat_id"
         private const val KEY_ACTIVE_CHAT_MODE = "active_chat_mode"
+        private const val KEY_ACTIVE_WEB_SEARCH_ENABLED = "active_web_search_enabled"
     }
 
     private val prefs: SharedPreferences =
@@ -67,5 +68,13 @@ class ChatSessionRepository(context: Context) {
 
     fun setActiveChatMode(mode: ChatMode) {
         prefs.edit().putString(KEY_ACTIVE_CHAT_MODE, mode.name).apply()
+    }
+
+    fun getActiveWebSearchEnabled(): Boolean {
+        return prefs.getBoolean(KEY_ACTIVE_WEB_SEARCH_ENABLED, false)
+    }
+
+    fun setActiveWebSearchEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ACTIVE_WEB_SEARCH_ENABLED, enabled).apply()
     }
 }

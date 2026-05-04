@@ -188,6 +188,8 @@ fun MessageInputText(
   onChatModeChanged: (ChatMode) -> Unit = {},
   showThinking: Boolean = false,
   onShowThinkingChanged: (Boolean) -> Unit = {},
+  webSearchEnabled: Boolean = false,
+  onWebSearchEnabledChanged: (Boolean) -> Unit = {},
   showStopButtonWhenInProgress: Boolean = false,
   onImageLimitExceeded: () -> Unit = {},
   inputEnabled: Boolean = true,
@@ -197,6 +199,7 @@ fun MessageInputText(
   val scope = rememberCoroutineScope()
   val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
   var showAddContentMenu by remember { mutableStateOf(false) }
+  var showControlsDropup by remember { mutableStateOf(false) }
   var showTextInputHistorySheet by remember { mutableStateOf(false) }
   var showCameraCaptureBottomSheet by remember { mutableStateOf(false) }
   val cameraCaptureSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -456,32 +459,72 @@ fun MessageInputText(
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                  OutlinedButton(
-                    onClick = {
-                      onChatModeChanged(
-                        if (chatMode == ChatMode.DEFAULT) ChatMode.PLAN else ChatMode.DEFAULT
-                      )
-                    },
-                    enabled = inputEnabled && !inProgress && !isResettingSession && !modelInitializing,
-                  ) {
-                    Text(
-                      stringResource(
-                        if (chatMode == ChatMode.PLAN) {
-                          R.string.plan_mode_on
-                        } else {
-                          R.string.plan_mode_off
-                        }
-                      )
-                    )
-                  }
-
-                  Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.show_thinking), style = bodyLargeNarrow)
-                    Switch(
-                      checked = showThinking,
-                      onCheckedChange = { onShowThinkingChanged(it) },
+                  Box {
+                    OutlinedButton(
+                      onClick = { showControlsDropup = true },
                       enabled = inputEnabled && !inProgress && !isResettingSession && !modelInitializing,
-                    )
+                    ) {
+                      Text("Controls")
+                    }
+                    DropdownMenu(
+                      expanded = showControlsDropup,
+                      onDismissRequest = { showControlsDropup = false },
+                    ) {
+                      DropdownMenuItem(
+                        text = {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                              stringResource(
+                                if (chatMode == ChatMode.PLAN) {
+                                  R.string.plan_mode_on
+                                } else {
+                                  R.string.plan_mode_off
+                                }
+                              ),
+                              style = bodyLargeNarrow,
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                              checked = chatMode == ChatMode.PLAN,
+                              onCheckedChange = {
+                                onChatModeChanged(if (it) ChatMode.PLAN else ChatMode.DEFAULT)
+                              },
+                            )
+                          }
+                        },
+                        onClick = {
+                          onChatModeChanged(
+                            if (chatMode == ChatMode.DEFAULT) ChatMode.PLAN else ChatMode.DEFAULT
+                          )
+                        },
+                      )
+                      DropdownMenuItem(
+                        text = {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(stringResource(R.string.show_thinking), style = bodyLargeNarrow)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                              checked = showThinking,
+                              onCheckedChange = { onShowThinkingChanged(it) },
+                            )
+                          }
+                        },
+                        onClick = { onShowThinkingChanged(!showThinking) },
+                      )
+                      DropdownMenuItem(
+                        text = {
+                          Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Web Search", style = bodyLargeNarrow)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                              checked = webSearchEnabled,
+                              onCheckedChange = { onWebSearchEnabledChanged(it) },
+                            )
+                          }
+                        },
+                        onClick = { onWebSearchEnabledChanged(!webSearchEnabled) },
+                      )
+                    }
                   }
 
                   // A plus button to show a popup menu to add stuff to the chat.

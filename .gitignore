@@ -2,5 +2,6 @@
 /flutter/build
 /flutter/.dart_tool
 /webapp-demo
-# model-refresh-debug.log
-# logcat_live.txt
+model-refresh-debug.log
+logcat_live.txt
+crash-submit.log

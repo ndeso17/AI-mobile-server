@@ -113,6 +113,36 @@ enum class ModelInitializationStatusType {
   ERROR,
 }
 
+enum class ConversionStatusType(val wireValue: String) {
+  NOT_REQUIRED("not_required"),
+  PENDING("pending_required"),
+  RUNNING("running"),
+  SUCCESS("success"),
+  FAILED("failed"),
+  UNSUPPORTED("unsupported");
+
+  companion object {
+    fun fromWire(value: String): ConversionStatusType {
+      return entries.firstOrNull { it.wireValue == value } ?: NOT_REQUIRED
+    }
+  }
+}
+
+enum class LiteRtModelKind {
+  TEXT_CHAT,
+  IMAGE_ONLY,
+  AUDIO_ONLY,
+  UNSUPPORTED,
+}
+
+enum class LiteRtInitReasonCode {
+  OK,
+  IMAGE_ONLY_TASK_MISMATCH,
+  RUNTIME_INIT_FAIL,
+  TF_LITE_VISION_ENCODER_NOT_FOUND,
+  UNSUPPORTED_ARCH_OR_MODEL,
+}
+
 enum class CleanupReason {
   NAVIGATION,
   MODEL_SWITCH,
@@ -190,6 +220,7 @@ data class ModelManagerUiState(
   val detectedExpandableRamGb: Double = 0.0,
   val effectiveRamForFilteringGb: Double = 0.0,
   val expandableRamSourceLabel: String = "Auto(advertised)",
+  val routerAllowedModelNames: Set<String> = emptySet(),
   val lastAllowlistRefreshResult: AllowlistRefreshResult? = null,
   val allowlistReloadToken: Long = 0L,
   val configValuesUpdateTrigger: Long = 0L,
@@ -349,7 +380,6 @@ constructor(
     if (_uiState.value.selectedModel.name != model.name) {
       _uiState.update { _uiState.value.copy(selectedModel = model) }
     }
-    dataStoreRepository.setLastSelectedModelName(model.name)
   }
 
   fun setAllowExpandableRamForModelFiltering(allow: Boolean) {
@@ -385,6 +415,30 @@ constructor(
 
   fun getLastSelectedModelName(): String {
     return dataStoreRepository.getLastSelectedModelName()
+  }
+
+  fun setRouterModelAllowed(modelName: String, allowed: Boolean) {
+    val current = dataStoreRepository.getRouterAllowedModelNames().toMutableSet()
+    if (allowed) {
+      current.add(modelName)
+    } else {
+      current.remove(modelName)
+    }
+    dataStoreRepository.setRouterAllowedModelNames(current)
+    _uiState.update { it.copy(routerAllowedModelNames = current.toSet()) }
+  }
+
+  fun getRouterAllowedModelNames(): Set<String> {
+    return dataStoreRepository.getRouterAllowedModelNames()
+  }
+
+  fun updateRouterAllowedModels(modelNames: Set<String>) {
+    _uiState.update { it.copy(routerAllowedModelNames = modelNames) }
+  }
+
+  fun setRouterAllowedModels(modelNames: Set<String>) {
+    dataStoreRepository.setRouterAllowedModelNames(modelNames)
+    updateRouterAllowedModels(modelNames)
   }
 
   fun consumeStartupModelPrompt(): Boolean {
@@ -521,11 +575,24 @@ constructor(
     model: Model,
     force: Boolean = false,
     onDone: () -> Unit = {},
+    onError: (String) -> Unit = {},
   ) {
     explicitlyUnloadedModelNames.remove(model.name)
     logMemoryWarningIfNeeded(context, model)
     requestIgnoreBatteryOptimizations(context)
     viewModelScope.launch(Dispatchers.Default) {
+      val preflightError = preflightModelCompatibility(context, task, model)
+      if (preflightError != null) {
+        Log.w(TAG, "Preflight failed for '${model.name}': $preflightError")
+        updateModelInitializationStatus(
+          model = model,
+          status = ModelInitializationStatusType.ERROR,
+          error = preflightError,
+        )
+        onError(preflightError)
+        return@launch
+      }
+
       // Skip if initialized already.
       if (
         !force &&
@@ -582,6 +649,7 @@ constructor(
             model = model,
             status = ModelInitializationStatusType.INITIALIZED,
           )
+          dataStoreRepository.setLastSelectedModelName(model.name)
           ModelKeepAliveService.startService(context.applicationContext, model.name)
           if (model.cleanUpAfterInit) {
             Log.d(TAG, "Model '${model.name}' needs cleaning up after init.")
@@ -589,15 +657,27 @@ constructor(
           }
           onDone()
         } else if (error.isNotEmpty()) {
+          if (error.contains("TF_LITE_VISION_ENCODER", ignoreCase = true)) {
+            Log.w(
+              TAG,
+              "litert_init_reason_code=${LiteRtInitReasonCode.TF_LITE_VISION_ENCODER_NOT_FOUND} model=${model.name}",
+            )
+            markImportedModelConversionRequired(
+              modelName = model.name,
+              reasonCode = "TF_LITE_VISION_ENCODER_NOT_FOUND",
+            )
+          }
           if (retryInitializationOnCpu(context = context, task = task, model = model, error = error)) {
             return@onDoneFn
           }
-          Log.d(TAG, "Model '${model.name}' failed to initialize")
+          Log.e(TAG, "Model '${model.name}' failed to initialize. Error: $error")
           updateModelInitializationStatus(
             model = model,
             status = ModelInitializationStatusType.ERROR,
             error = error,
           )
+          updateImportedModelProbeReason(model.name, LiteRtInitReasonCode.RUNTIME_INIT_FAIL.name)
+          onError(error)
         }
       }
 
@@ -610,6 +690,141 @@ constructor(
           onDone = onDoneFn,
         )
     }
+  }
+
+  private fun markImportedModelConversionRequired(modelName: String, reasonCode: String) {
+    val current = dataStoreRepository.readImportedModels().toMutableList()
+    val index = current.indexOfFirst { it.fileName == modelName }
+    if (index < 0) return
+    val updated =
+      current[index].toBuilder()
+        .setConversionRequired(true)
+        .setConversionStatus("pending_required")
+        .setCapabilityProbeReasonCode(reasonCode)
+        .setConversionOutputRuntimeType(ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_LITERT_LM)
+        .build()
+    current[index] = updated
+    dataStoreRepository.saveImportedModels(current)
+    Log.w(TAG, "task_import_conversion_required model=$modelName reason=$reasonCode")
+  }
+
+  private fun updateImportedModelProbeReason(modelName: String, reasonCode: String) {
+    val imported = dataStoreRepository.readImportedModels().toMutableList()
+    val idx = imported.indexOfFirst { it.fileName == modelName }
+    if (idx < 0) return
+    imported[idx] =
+      imported[idx].toBuilder()
+        .setCapabilityProbeReasonCode(reasonCode)
+        .build()
+    dataStoreRepository.saveImportedModels(imported)
+  }
+
+  fun getImportedModelInfo(modelName: String): ImportedModel? {
+    return dataStoreRepository.readImportedModels().firstOrNull { it.fileName == modelName }
+  }
+
+  fun getImportedModelConversionStatus(modelName: String): ConversionStatusType {
+    val info = getImportedModelInfo(modelName) ?: return ConversionStatusType.NOT_REQUIRED
+    return ConversionStatusType.fromWire(info.conversionStatus)
+  }
+
+  fun startOnDeviceConversion(
+    modelName: String,
+    onDone: (success: Boolean, message: String) -> Unit = { _, _ -> },
+  ) {
+    viewModelScope.launch(Dispatchers.IO) {
+      val imported = dataStoreRepository.readImportedModels().toMutableList()
+      val index = imported.indexOfFirst { it.fileName == modelName }
+      if (index < 0) {
+        onDone(false, "Model import tidak ditemukan.")
+        return@launch
+      }
+      val source = imported[index]
+      imported[index] =
+        source.toBuilder()
+          .setConversionRequired(true)
+          .setConversionStatus(ConversionStatusType.RUNNING.wireValue)
+          .build()
+      dataStoreRepository.saveImportedModels(imported)
+      Log.d(TAG, "converter_job_start model=$modelName")
+      _uiState.update { it.copy(modelImportingUpdateTrigger = System.currentTimeMillis()) }
+
+      delay(900)
+
+      val lower = modelName.lowercase()
+      val (finalStatus, reasonCode, message) =
+        when {
+          lower.endsWith(".task") -> {
+            Triple(
+              ConversionStatusType.UNSUPPORTED,
+              "ON_DEVICE_CONVERTER_RUNTIME_UNAVAILABLE",
+              "Runtime converter on-device belum tersedia di build ini. Gunakan model chat-compatible atau mode context-first.",
+            )
+          }
+          else -> {
+            Triple(ConversionStatusType.SUCCESS, "", "Konversi model selesai.")
+          }
+        }
+      val current = dataStoreRepository.readImportedModels().toMutableList()
+      val currentIndex = current.indexOfFirst { it.fileName == modelName }
+      if (currentIndex >= 0) {
+        val builder =
+          current[currentIndex].toBuilder()
+            .setConversionStatus(finalStatus.wireValue)
+            .setConversionRequired(finalStatus != ConversionStatusType.SUCCESS)
+        if (reasonCode.isNotEmpty()) {
+          builder.setCapabilityProbeReasonCode(reasonCode)
+        }
+        if (finalStatus == ConversionStatusType.SUCCESS) {
+          builder.setConversionOutputRuntimeType(current[currentIndex].runtimeType)
+        }
+        current[currentIndex] = builder.build()
+        dataStoreRepository.saveImportedModels(current)
+      }
+      Log.d(TAG, "converter_job_${if (finalStatus == ConversionStatusType.SUCCESS) "success" else "failed"} model=$modelName status=${finalStatus.wireValue} reason=$reasonCode")
+      _uiState.update { it.copy(modelImportingUpdateTrigger = System.currentTimeMillis()) }
+      onDone(finalStatus == ConversionStatusType.SUCCESS, message)
+    }
+  }
+
+  private fun preflightModelCompatibility(context: Context, task: Task, model: Model): String? {
+    val importedInfo =
+      dataStoreRepository.readImportedModels().firstOrNull { it.fileName == model.name }
+    if (importedInfo?.conversionRequired == true) {
+      return "Model ini membutuhkan konversi sebelum bisa dipakai untuk Chat. " +
+        "Status: ${importedInfo.conversionStatus.ifBlank { "pending_required" }}."
+    }
+    if (model.runtimeType == RuntimeType.LITERT_LM && importedInfo != null) {
+      val kind = classifyImportedLiteRtModel(importedInfo)
+      Log.d(
+        TAG,
+        "litert_preflight_result model=${model.name} task=${task.id} kind=$kind supportImage=${importedInfo.llmConfig.supportImage}",
+      )
+      if (kind == LiteRtModelKind.IMAGE_ONLY && task.id == BuiltInTaskId.LLM_CHAT) {
+        updateImportedModelProbeReason(model.name, LiteRtInitReasonCode.IMAGE_ONLY_TASK_MISMATCH.name)
+        Log.w(
+          TAG,
+          "litert_init_reason_code=${LiteRtInitReasonCode.IMAGE_ONLY_TASK_MISMATCH} model=${model.name}",
+        )
+        return "Model ini terdeteksi image-first (VLM). Gunakan di task Ask Image, bukan Chat teks biasa."
+      }
+    }
+    if (model.runtimeType != RuntimeType.ONNX) {
+      return null
+    }
+    return runCatching {
+      com.server.edge.gallery.runtime.onnx.OnnxModelHelper.preflight(context = context, model = model)
+    }.getOrElse { e -> e.message ?: "ONNX preflight failed." }
+  }
+
+  private fun classifyImportedLiteRtModel(info: ImportedModel): LiteRtModelKind {
+    val lowered = info.fileName.lowercase()
+    if (lowered.contains("fastvlm") || lowered.contains("vlm") || lowered.contains("vision")) {
+      return LiteRtModelKind.IMAGE_ONLY
+    }
+    if (info.llmConfig.supportImage && !info.llmConfig.supportAudio) return LiteRtModelKind.IMAGE_ONLY
+    if (info.llmConfig.supportAudio && !info.llmConfig.supportImage) return LiteRtModelKind.AUDIO_ONLY
+    return LiteRtModelKind.TEXT_CHAT
   }
 
   private fun retryInitializationOnCpu(
@@ -884,6 +1099,7 @@ constructor(
         BuiltInTaskId.LLM_MOBILE_ACTIONS,
         BuiltInTaskId.LLM_AGENT_CHAT,
       )
+    val importedKind = classifyImportedLiteRtModel(info)
     for (task in getTasksByIds(ids = setOfTasks)) {
       // Remove duplicated imported model if existed.
       val modelIndex = task.models.indexOfFirst { info.fileName == it.name && it.imported }
@@ -891,16 +1107,21 @@ constructor(
         Log.d(TAG, "duplicated imported model found in task. Removing it first")
         task.models.removeAt(modelIndex)
       }
-      if (
-        (task.id == BuiltInTaskId.LLM_ASK_IMAGE && model.llmSupportImage) ||
-          (task.id == BuiltInTaskId.LLM_ASK_AUDIO && model.llmSupportAudio) ||
-          (task.id == BuiltInTaskId.LLM_TINY_GARDEN && model.llmSupportTinyGarden) ||
-          (task.id == BuiltInTaskId.LLM_MOBILE_ACTIONS && model.llmSupportMobileActions) ||
-          (task.id != BuiltInTaskId.LLM_ASK_IMAGE &&
-            task.id != BuiltInTaskId.LLM_ASK_AUDIO &&
-            task.id != BuiltInTaskId.LLM_TINY_GARDEN &&
-            task.id != BuiltInTaskId.LLM_MOBILE_ACTIONS)
-      ) {
+      val isGeneralTextTask =
+        task.id != BuiltInTaskId.LLM_ASK_IMAGE &&
+          task.id != BuiltInTaskId.LLM_ASK_AUDIO &&
+          task.id != BuiltInTaskId.LLM_TINY_GARDEN &&
+          task.id != BuiltInTaskId.LLM_MOBILE_ACTIONS
+      val allowForTask =
+        when {
+          task.id == BuiltInTaskId.LLM_ASK_IMAGE -> model.llmSupportImage
+          task.id == BuiltInTaskId.LLM_ASK_AUDIO -> model.llmSupportAudio
+          task.id == BuiltInTaskId.LLM_TINY_GARDEN -> model.llmSupportTinyGarden
+          task.id == BuiltInTaskId.LLM_MOBILE_ACTIONS -> model.llmSupportMobileActions
+          isGeneralTextTask && importedKind == LiteRtModelKind.IMAGE_ONLY -> false
+          else -> true
+        }
+      if (allowForTask) {
         task.models.add(model)
         if (task.id == BuiltInTaskId.LLM_TINY_GARDEN) {
           val newConfigs = model.configs.toMutableList()
@@ -1568,6 +1789,7 @@ constructor(
       detectedExpandableRamGb = ramSnapshot.expandableGb,
       effectiveRamForFilteringGb = ramSnapshot.effectiveGb,
       expandableRamSourceLabel = ramSnapshot.expandableSourceLabel,
+      routerAllowedModelNames = dataStoreRepository.getRouterAllowedModelNames(),
     )
   }
 
@@ -1924,6 +2146,14 @@ constructor(
   }
 
   private fun createModelFromImportedModelInfo(info: ImportedModel): Model {
+    val inferredRuntimeType =
+      when (info.runtimeType) {
+        ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_ONNX -> RuntimeType.ONNX
+        ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_LITERT_LM ->
+          RuntimeType.LITERT_LM
+        else ->
+          if (info.fileName.lowercase().endsWith(".onnx")) RuntimeType.ONNX else RuntimeType.LITERT_LM
+      }
     val accelerators: MutableList<Accelerator> =
       info.llmConfig.compatibleAcceleratorsList
         .mapNotNull { acceleratorLabel ->
@@ -1936,7 +2166,11 @@ constructor(
         }
         .toMutableList()
     val llmMaxToken = info.llmConfig.defaultMaxTokens
-    val llmSupportImage = info.llmConfig.supportImage
+    val inferredImageSupportFromName =
+      info.fileName.lowercase().let {
+        it.contains("fastvlm") || it.contains("vlm") || it.contains("vision")
+      }
+    val llmSupportImage = info.llmConfig.supportImage || inferredImageSupportFromName
     val llmSupportAudio = info.llmConfig.supportAudio
     val llmSupportTinyGarden = info.llmConfig.supportTinyGarden
     val llmSupportMobileActions = info.llmConfig.supportMobileActions
@@ -1951,11 +2185,44 @@ constructor(
           supportThinking = llmSupportThinking,
         )
         .toMutableList()
+    val onnxKind =
+      if (inferredRuntimeType == RuntimeType.ONNX) {
+        runCatching {
+          val tempModel =
+            Model(
+              name = info.fileName,
+              downloadFileName = "$IMPORTS_DIR/${info.fileName}",
+              imported = true,
+              runtimeType = RuntimeType.ONNX,
+            )
+          com.server.edge.gallery.runtime.onnx.OnnxModelHelper.classifyModelKind(
+            context = context,
+            model = tempModel,
+          )
+        }.getOrDefault(com.server.edge.gallery.runtime.onnx.OnnxModelKind.UNKNOWN)
+      } else {
+        com.server.edge.gallery.runtime.onnx.OnnxModelKind.UNKNOWN
+      }
+    val isEmbeddingOnnx =
+      inferredRuntimeType == RuntimeType.ONNX &&
+        onnxKind == com.server.edge.gallery.runtime.onnx.OnnxModelKind.EMBEDDING
     val model =
       Model(
         name = info.fileName,
         url = "",
         configs = configs,
+        info =
+          when {
+            info.conversionRequired ->
+              "Model import memerlukan konversi wajib sebelum dipakai di Chat. Status: ${info.conversionStatus}. Runtime converter on-device belum tersedia di build ini."
+            isEmbeddingOnnx ->
+              "Embedding model (bukan chat generator). Gunakan untuk retrieval/context."
+            llmSupportImage && info.fileName.lowercase().contains("vlm") ->
+              "Image-only model (VLM). Gunakan di task Ask Image."
+            info.capabilityProbeReasonCode.isNotBlank() ->
+              "Status model: ${info.capabilityProbeReasonCode}."
+            else -> ""
+          },
         sizeInBytes = info.fileSize,
         downloadFileName = "$IMPORTS_DIR/${info.fileName}",
         showBenchmarkButton = false,
@@ -1982,9 +2249,8 @@ constructor(
           },
         llmMaxToken = llmMaxToken,
         accelerators = accelerators,
-        // We assume all imported models are LLM for now.
-        isLlm = true,
-        runtimeType = RuntimeType.LITERT_LM,
+        isLlm = !isEmbeddingOnnx && !info.conversionRequired,
+        runtimeType = inferredRuntimeType,
       )
     model.preProcess()
 

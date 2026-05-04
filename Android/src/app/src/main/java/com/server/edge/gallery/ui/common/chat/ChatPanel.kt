@@ -33,6 +33,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -76,6 +78,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -126,13 +129,16 @@ fun ChatPanel(
   onChatModeChanged: (ChatMode) -> Unit = {},
   showThinking: Boolean = false,
   onShowThinkingChanged: (Boolean) -> Unit = {},
+  webSearchEnabled: Boolean = false,
+  onWebSearchEnabledChanged: (Boolean) -> Unit = {},
   emptyStateComposable: @Composable (Model) -> Unit = {},
   inputEnabled: Boolean = true,
 ) {
   val uiState by viewModel.uiState.collectAsState()
   val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
-  val messages = uiState.messagesByModel[selectedModel.name] ?: listOf()
-  val streamingMessage = uiState.streamingMessagesByModel[selectedModel.name]
+  val sessionKey = viewModel.currentSessionId ?: selectedModel.name
+  val messages = uiState.messagesBySession[sessionKey] ?: uiState.messagesByModel[selectedModel.name] ?: listOf()
+  val streamingMessage = uiState.streamingMessagesBySession[sessionKey] ?: uiState.streamingMessagesByModel[selectedModel.name]
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
   val haptic = LocalHapticFeedback.current
@@ -273,7 +279,15 @@ fun ChatPanel(
     }
 
     Column(
-      modifier = modifier.padding(innerPadding).consumeWindowInsets(innerPadding).imePadding()
+      modifier =
+        modifier
+          .padding(
+            top = innerPadding.calculateTopPadding(),
+            start = innerPadding.calculateStartPadding(LayoutDirection.Ltr),
+            end = innerPadding.calculateEndPadding(LayoutDirection.Ltr),
+          )
+          .consumeWindowInsets(innerPadding)
+          .imePadding()
     ) {
       Box(contentAlignment = Alignment.BottomCenter, modifier = Modifier.weight(1f)) {
         val cdChatPanel = stringResource(R.string.cd_chat_panel)
@@ -558,12 +572,10 @@ fun ChatPanel(
         textFieldPlaceHolderRes = task.textInputPlaceHolderRes,
         onValueChanged = { curMessage = it },
         onSendMessage = {
-          if (isSelectedModelInitialized) {
-            onSendMessage(selectedModel, it)
-            curMessage = ""
-            // Hide software keyboard.
-            focusManager.clearFocus()
-          }
+          onSendMessage(selectedModel, it)
+          curMessage = ""
+          // Hide software keyboard.
+          focusManager.clearFocus()
         },
         onOpenPromptTemplatesClicked = {
           onSendMessage(
@@ -596,9 +608,11 @@ fun ChatPanel(
         onChatModeChanged = onChatModeChanged,
         showThinking = showThinking,
         onShowThinkingChanged = onShowThinkingChanged,
+        webSearchEnabled = webSearchEnabled,
+        onWebSearchEnabledChanged = onWebSearchEnabledChanged,
         showStopButtonWhenInProgress = showStopButtonInInputWhenInProgress,
         onImageLimitExceeded = { showImageLimitBanner = true },
-        inputEnabled = inputEnabled && isSelectedModelInitialized,
+        inputEnabled = inputEnabled,
       )
     }
   }

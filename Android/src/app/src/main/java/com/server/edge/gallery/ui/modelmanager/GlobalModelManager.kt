@@ -71,6 +71,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -96,9 +97,11 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.server.edge.gallery.R
 import com.server.edge.gallery.data.Model
+import com.server.edge.gallery.data.ModelDownloadStatusType
 import com.server.edge.gallery.data.RuntimeType
 import com.server.edge.gallery.data.Task
 import com.server.edge.gallery.openai.OpenAiServerService
@@ -135,10 +138,14 @@ fun GlobalModelManager(
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
   var showImportDialog by remember { mutableStateOf(false) }
   var showImportingDialog by remember { mutableStateOf(false) }
+  var showRouterModelSelectorDialog by remember { mutableStateOf(false) }
   val scope = rememberCoroutineScope()
   val context = LocalContext.current
   val snackbarHostState = remember { SnackbarHostState() }
   val modelItemExpandedStates = remember { mutableStateMapOf<String, Boolean>() }
+  var routerAllowedDraft by remember(uiState.routerAllowedModelNames) {
+    mutableStateOf(uiState.routerAllowedModelNames.toMutableSet())
+  }
 
   var searchQuery by remember { mutableStateOf("") }
   var selectedFilter by remember { mutableStateOf("All") }
@@ -158,12 +165,19 @@ fun GlobalModelManager(
         result.data?.data?.let { uri ->
           val fileName = getFileName(context = context, uri = uri)
           Log.d(TAG, "Selected file: $fileName")
-          // Show warning for model file types other than .task and .litertlm.
-          if (fileName != null && !fileName.endsWith(".task") && !fileName.endsWith(".litertlm")) {
+          val lowerName = fileName?.lowercase()
+          val supportedLocalFormat =
+            lowerName != null &&
+              (lowerName.endsWith(".task") ||
+                lowerName.endsWith(".litertlm") ||
+                lowerName.endsWith(".onnx") ||
+                lowerName.endsWith(".bin"))
+          // Show warning for model file types other than supported native model extensions.
+          if (!supportedLocalFormat) {
             showUnsupportedFileTypeDialog = true
           }
           // Show warning for web-only model (by checking if the file name has "-web" in it).
-          else if (fileName != null && fileName.lowercase().contains("-web")) {
+          else if (lowerName != null && lowerName.contains("-web")) {
             showUnsupportedWebModelDialog = true
           } else {
             selectedLocalModelFileUri.value = uri
@@ -256,6 +270,18 @@ fun GlobalModelManager(
       }
     }
   }
+  val routerCandidates by remember(uiState.tasks) {
+    derivedStateOf {
+      viewModel
+        .getAllModels()
+        .filter { model ->
+          model.isLlm &&
+            uiState.modelDownloadStatus[model.name]?.status == ModelDownloadStatusType.SUCCEEDED
+        }
+        .distinctBy { it.name }
+        .sortedBy { it.displayName.ifEmpty { it.name } }
+    }
+  }
 
   val defaultExpandedModelName by remember(uiState.selectedModel, uiState.modelInitializationStatus) {
     derivedStateOf {
@@ -271,7 +297,16 @@ fun GlobalModelManager(
     }
   }
 
-  val handleClickModel: (Model) -> Unit = { model ->
+  val handleClickModel: (Model) -> Unit = fun(model: Model) {
+    val importedInfo = viewModel.getImportedModelInfo(model.name)
+    if (importedInfo?.conversionRequired == true) {
+      scope.launch {
+        snackbarHostState.showSnackbar(
+          "Model ini perlu konversi dulu. Status: ${importedInfo.conversionStatus.ifBlank { "pending_required" }}",
+        )
+      }
+      return
+    }
     val uiState = viewModel.uiState.value
     val isInitialized = uiState.modelInitializationStatus[model.name]?.status == com.server.edge.gallery.ui.modelmanager.ModelInitializationStatusType.INITIALIZED
     val tasks = uiState.tasks
@@ -320,46 +355,6 @@ fun GlobalModelManager(
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-              onClick = {
-                viewModel.refreshModelAllowlist(forceRemote = true)
-              },
-              enabled = !uiState.loadingModelAllowlist,
-              colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-              ),
-              shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
-              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-              Icon(
-                imageVector = Icons.Rounded.Refresh,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-              )
-              Spacer(modifier = Modifier.width(4.dp))
-              Text("Refresh", style = MaterialTheme.typography.labelLarge)
-            }
-
-            Button(
-              onClick = { showImportModelSheet = true },
-              colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-              ),
-              shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
-              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-              Icon(
-                imageVector = Icons.Filled.Add,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-              )
-              Spacer(modifier = Modifier.width(4.dp))
-              Text("Import", style = MaterialTheme.typography.labelLarge)
-            }
-          }
         }
       }
     },
@@ -375,6 +370,74 @@ fun GlobalModelManager(
         contentPadding =
           PaddingValues(top = 16.dp, bottom = innerPadding.calculateBottomPadding() + 80.dp),
       ) {
+        item(key = "actions_bar") {
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Button(
+              onClick = {
+                routerAllowedDraft = uiState.routerAllowedModelNames.toMutableSet()
+                showRouterModelSelectorDialog = true
+              },
+              modifier = Modifier.weight(1f),
+              colors =
+                ButtonDefaults.buttonColors(
+                  containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                  contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                ),
+              shape = RoundedCornerShape(16.dp),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Rounded.ListAlt,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Router Models", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Button(
+              onClick = { viewModel.refreshModelAllowlist(forceRemote = true) },
+              enabled = !uiState.loadingModelAllowlist,
+              modifier = Modifier.weight(1f),
+              colors =
+                ButtonDefaults.buttonColors(
+                  containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                  contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ),
+              shape = RoundedCornerShape(16.dp),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Rounded.Refresh,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Refresh", maxLines = 1)
+            }
+            Button(
+              onClick = { showImportModelSheet = true },
+              modifier = Modifier.weight(1f),
+              colors =
+                ButtonDefaults.buttonColors(
+                  containerColor = MaterialTheme.colorScheme.primary,
+                  contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+              shape = RoundedCornerShape(16.dp),
+              contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Import", maxLines = 1)
+            }
+          }
+        }
         item(key = "filter_chips") {
           Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -434,6 +497,12 @@ fun GlobalModelManager(
           }
         }
         items(filteredImportedModels) { model ->
+          val importedInfo = remember(model.name, uiState.modelImportingUpdateTrigger) {
+            viewModel.getImportedModelInfo(model.name)
+          }
+          val conversionRequired = importedInfo?.conversionRequired == true
+          val conversionStatus =
+            importedInfo?.conversionStatus?.ifBlank { "pending_required" } ?: "not_required"
           ModelItem(
             model = model,
             task = null,
@@ -448,6 +517,45 @@ fun GlobalModelManager(
             showBenchmarkButton = false,
             onExpanded = { modelItemExpandedStates[model.name] = it },
           )
+          if (conversionRequired) {
+            Row(
+              modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              val isRunning = conversionStatus == "running"
+              Button(
+                onClick = {
+                  viewModel.startOnDeviceConversion(model.name) { success, message ->
+                    scope.launch {
+                      snackbarHostState.showSnackbar(
+                        if (success) "Konversi berhasil: $message" else "Konversi gagal: $message",
+                      )
+                    }
+                  }
+                },
+                enabled = !isRunning,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+              ) {
+                Text(
+                  when (conversionStatus) {
+                    "failed", "unsupported" -> "Retry Convert"
+                    "running" -> "Converting..."
+                    else -> "Convert on device"
+                  },
+                )
+              }
+              if (conversionStatus == "success") {
+                Button(
+                  onClick = { handleClickModel(model) },
+                  modifier = Modifier.weight(1f),
+                  shape = RoundedCornerShape(12.dp),
+                ) {
+                  Text("Use Converted Model")
+                }
+              }
+            }
+          }
         }
       }
 
@@ -469,6 +577,58 @@ fun GlobalModelManager(
             .align(Alignment.BottomCenter)
       )
     }
+  }
+
+  if (showRouterModelSelectorDialog) {
+    AlertDialog(
+      onDismissRequest = { showRouterModelSelectorDialog = false },
+      title = { Text("Model yang boleh dipakai Router") },
+      text = {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          items(routerCandidates) { model ->
+            val checked = routerAllowedDraft.contains(model.name)
+            Row(
+              modifier =
+                Modifier.fillMaxWidth()
+                  .clickable {
+                    routerAllowedDraft =
+                      routerAllowedDraft.toMutableSet().apply {
+                        if (contains(model.name)) remove(model.name) else add(model.name)
+                      }
+                  }
+                  .padding(vertical = 6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+              Text(model.displayName.ifEmpty { model.name }, style = MaterialTheme.typography.bodyMedium)
+              Switch(
+                checked = checked,
+                onCheckedChange = { on ->
+                  routerAllowedDraft =
+                    routerAllowedDraft.toMutableSet().apply {
+                      if (on) add(model.name) else remove(model.name)
+                    }
+                },
+              )
+            }
+          }
+        }
+      },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            val normalized = routerAllowedDraft.toSet()
+            viewModel.setRouterAllowedModels(normalized)
+            showRouterModelSelectorDialog = false
+          }
+        ) {
+          Text("Simpan")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { showRouterModelSelectorDialog = false }) { Text("Batal") }
+      },
+    )
   }
 
   if (showTaskSelectorBottomSheet) {

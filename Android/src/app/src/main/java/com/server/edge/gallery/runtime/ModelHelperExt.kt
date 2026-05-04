@@ -18,6 +18,7 @@ package com.server.edge.gallery.runtime
 
 import com.server.edge.gallery.data.Model
 import com.server.edge.gallery.data.RuntimeType
+import com.server.edge.gallery.runtime.onnx.OnnxModelHelper
 import com.server.edge.gallery.runtime.aicore.AICoreModelHelper
 import com.server.edge.gallery.ui.llmchat.LlmChatModelHelper
 
@@ -25,6 +26,9 @@ val Model.runtimeHelper: LlmModelHelper
   get() {
     if (this.runtimeType == RuntimeType.AICORE) {
       return AICoreModelHelper
+    }
+    if (this.runtimeType == RuntimeType.ONNX) {
+      return OnnxModelHelper
     }
     return LlmChatModelHelper
   }

@@ -42,9 +42,13 @@ data class ChatUiState(
 
   /** A map of model names to lists of chat messages. */
   val messagesByModel: Map<String, MutableList<ChatMessage>> = mapOf(),
+  /** A map of session IDs to lists of chat messages (router-first canonical history). */
+  val messagesBySession: Map<String, MutableList<ChatMessage>> = mapOf(),
 
   /** A map of model names to the currently streaming chat message. */
   val streamingMessagesByModel: Map<String, ChatMessage> = mapOf(),
+  /** A map of session IDs to the currently streaming chat message. */
+  val streamingMessagesBySession: Map<String, ChatMessage> = mapOf(),
 )
 
 /** ViewModel responsible for managing the chat UI state and handling chat-related operations. */
@@ -57,23 +61,36 @@ abstract class ChatViewModel() : ViewModel() {
   /** Tracks the last model that was initialized to avoid resetting chat on tab switches. */
   var lastInitializedModelName: String? = null
 
+  private fun conversationKey(model: Model): String = currentSessionId ?: model.name
+
   fun setMessages(model: Model, messages: List<ChatMessage>) {
     android.util.Log.d("AGChatViewModel", "setMessages: model=${model.name}, count=${messages.size}")
+    val key = conversationKey(model)
     val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
     newMessagesByModel[model.name] = messages.toMutableList()
-    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel) }
+    val newMessagesBySession = _uiState.value.messagesBySession.toMutableMap()
+    newMessagesBySession[key] = messages.toMutableList()
+    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel, messagesBySession = newMessagesBySession) }
   }
 
   fun addMessage(model: Model, message: ChatMessage) {
+    val key = conversationKey(model)
     val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
     val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
+    val newMessagesBySession = _uiState.value.messagesBySession.toMutableMap()
+    val newSessionMessages = newMessagesBySession[key]?.toMutableList() ?: mutableListOf()
     newMessagesByModel[model.name] = newMessages
+    newMessagesBySession[key] = newSessionMessages
     // Remove prompt template message if it is the current last message.
-    if (newMessages.size > 0 && newMessages.last().type == ChatMessageType.PROMPT_TEMPLATES) {
+    if (newMessages.isNotEmpty() && newMessages.last().type == ChatMessageType.PROMPT_TEMPLATES) {
       newMessages.removeAt(newMessages.size - 1)
     }
+    if (newSessionMessages.isNotEmpty() && newSessionMessages.last().type == ChatMessageType.PROMPT_TEMPLATES) {
+      newSessionMessages.removeAt(newSessionMessages.size - 1)
+    }
     newMessages.add(message)
-    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel) }
+    newSessionMessages.add(message)
+    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel, messagesBySession = newMessagesBySession) }
   }
 
   fun insertMessageAfter(model: Model, anchorMessage: ChatMessage, messageToAdd: ChatMessage) {
@@ -102,27 +119,40 @@ abstract class ChatViewModel() : ViewModel() {
   }
 
   fun removeLastMessage(model: Model) {
+    val key = conversationKey(model)
     val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
     val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
     if (newMessages.size > 0) {
       newMessages.removeAt(newMessages.size - 1)
     }
     newMessagesByModel[model.name] = newMessages
-    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel) }
+    val newMessagesBySession = _uiState.value.messagesBySession.toMutableMap()
+    val newSessionMessages = newMessagesBySession[key]?.toMutableList() ?: mutableListOf()
+    if (newSessionMessages.isNotEmpty()) {
+      newSessionMessages.removeAt(newSessionMessages.size - 1)
+    }
+    newMessagesBySession[key] = newSessionMessages
+    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel, messagesBySession = newMessagesBySession) }
   }
 
   fun clearAllMessages(model: Model) {
+    val key = conversationKey(model)
     val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
     newMessagesByModel[model.name] = mutableListOf()
-    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel) }
+    val newMessagesBySession = _uiState.value.messagesBySession.toMutableMap()
+    newMessagesBySession[key] = mutableListOf()
+    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel, messagesBySession = newMessagesBySession) }
   }
 
   fun getLastMessage(model: Model): ChatMessage? {
-    return (_uiState.value.messagesByModel[model.name] ?: listOf()).lastOrNull()
+    val key = conversationKey(model)
+    return (_uiState.value.messagesBySession[key] ?: _uiState.value.messagesByModel[model.name] ?: listOf()).lastOrNull()
   }
 
   fun getLastMessageWithType(model: Model, type: ChatMessageType): ChatMessage? {
-    return (_uiState.value.messagesByModel[model.name] ?: listOf()).lastOrNull { it.type == type }
+    val key = conversationKey(model)
+    return (_uiState.value.messagesBySession[key] ?: _uiState.value.messagesByModel[model.name] ?: listOf())
+      .lastOrNull { it.type == type }
   }
 
   fun getLastMessageWithTypeAndSide(
@@ -130,12 +160,14 @@ abstract class ChatViewModel() : ViewModel() {
     type: ChatMessageType,
     side: ChatSide,
   ): ChatMessage? {
-    return (_uiState.value.messagesByModel[model.name] ?: listOf()).lastOrNull {
+    val key = conversationKey(model)
+    return (_uiState.value.messagesBySession[key] ?: _uiState.value.messagesByModel[model.name] ?: listOf()).lastOrNull {
       it.type == type && it.side == side
     }
   }
 
   fun updateLastThinkingMessageContentIncrementally(model: Model, partialContent: String) {
+    val key = conversationKey(model)
     val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
     val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
     if (newMessages.isNotEmpty()) {
@@ -155,7 +187,9 @@ abstract class ChatViewModel() : ViewModel() {
       }
     }
     newMessagesByModel[model.name] = newMessages
-    val newUiState = _uiState.value.copy(messagesByModel = newMessagesByModel)
+    val newMessagesBySession = _uiState.value.messagesBySession.toMutableMap()
+    newMessagesBySession[key] = newMessages.toMutableList()
+    val newUiState = _uiState.value.copy(messagesByModel = newMessagesByModel, messagesBySession = newMessagesBySession)
     _uiState.update { newUiState }
   }
 
@@ -164,6 +198,7 @@ abstract class ChatViewModel() : ViewModel() {
     partialContent: String,
     latencyMs: Float,
   ) {
+    val key = conversationKey(model)
     val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
     val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
     if (newMessages.isNotEmpty()) {
@@ -183,7 +218,9 @@ abstract class ChatViewModel() : ViewModel() {
       }
     }
     newMessagesByModel[model.name] = newMessages
-    val newUiState = _uiState.value.copy(messagesByModel = newMessagesByModel)
+    val newMessagesBySession = _uiState.value.messagesBySession.toMutableMap()
+    newMessagesBySession[key] = newMessages.toMutableList()
+    val newUiState = _uiState.value.copy(messagesByModel = newMessagesByModel, messagesBySession = newMessagesBySession)
     _uiState.update { newUiState }
   }
 
@@ -207,6 +244,7 @@ abstract class ChatViewModel() : ViewModel() {
   }
 
   fun replaceLastMessage(model: Model, message: ChatMessage, type: ChatMessageType) {
+    val key = conversationKey(model)
     val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
     val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
     if (newMessages.size > 0) {
@@ -216,7 +254,9 @@ abstract class ChatViewModel() : ViewModel() {
       }
     }
     newMessagesByModel[model.name] = newMessages
-    val newUiState = _uiState.value.copy(messagesByModel = newMessagesByModel)
+    val newMessagesBySession = _uiState.value.messagesBySession.toMutableMap()
+    newMessagesBySession[key] = newMessages.toMutableList()
+    val newUiState = _uiState.value.copy(messagesByModel = newMessagesByModel, messagesBySession = newMessagesBySession)
     _uiState.update { newUiState }
   }
 
@@ -232,9 +272,17 @@ abstract class ChatViewModel() : ViewModel() {
   }
 
   fun updateStreamingMessage(model: Model, message: ChatMessage) {
+    val key = conversationKey(model)
     val newStreamingMessagesByModel = _uiState.value.streamingMessagesByModel.toMutableMap()
     newStreamingMessagesByModel[model.name] = message
-    _uiState.update { _uiState.value.copy(streamingMessagesByModel = newStreamingMessagesByModel) }
+    val newStreamingMessagesBySession = _uiState.value.streamingMessagesBySession.toMutableMap()
+    newStreamingMessagesBySession[key] = message
+    _uiState.update {
+      _uiState.value.copy(
+        streamingMessagesByModel = newStreamingMessagesByModel,
+        streamingMessagesBySession = newStreamingMessagesBySession,
+      )
+    }
   }
 
   fun updateCollapsableProgressPanelMessage(
@@ -246,9 +294,14 @@ abstract class ChatViewModel() : ViewModel() {
     addItemDescription: String,
     customData: Any? = null,
   ) {
+    val key = conversationKey(model)
     val accelerator = model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = "")
     val newMessagesByModel = _uiState.value.messagesByModel.toMutableMap()
     val newMessages = newMessagesByModel[model.name]?.toMutableList() ?: mutableListOf()
+    val traceId = customData as? String
+    if (addItemTitle.isEmpty() && traceId == null) {
+      return
+    }
 
     val createNewCollapsableMessage = {
       ChatMessageCollapsableProgressPanel(
@@ -266,7 +319,37 @@ abstract class ChatViewModel() : ViewModel() {
       )
     }
 
-    if (newMessages.isNotEmpty() && newMessages.last() is ChatMessageLoading) {
+    val traceIndex =
+      if (traceId != null) {
+        newMessages.indexOfLast {
+          val panel = it as? ChatMessageCollapsableProgressPanel ?: return@indexOfLast false
+          panel.customData == traceId
+        }
+      } else {
+        -1
+      }
+
+    if (traceIndex >= 0) {
+      val existing = newMessages[traceIndex] as ChatMessageCollapsableProgressPanel
+      val shouldAppend =
+        addItemTitle.isNotBlank() &&
+          existing.items.lastOrNull()?.title != addItemTitle
+      newMessages[traceIndex] =
+        ChatMessageCollapsableProgressPanel(
+          title = title,
+          accelerator = accelerator,
+          inProgress = inProgress,
+          doneIcon = doneIcon,
+          items =
+            if (shouldAppend) {
+              existing.items + listOf(ProgressPanelItem(title = addItemTitle, description = addItemDescription))
+            } else {
+              existing.items
+            },
+          customData = traceId,
+          logMessages = existing.logMessages,
+        )
+    } else if (newMessages.isNotEmpty() && newMessages.last() is ChatMessageLoading) {
       newMessages.removeAt(newMessages.size - 1)
       newMessages.add(createNewCollapsableMessage())
     } else {
@@ -320,7 +403,9 @@ abstract class ChatViewModel() : ViewModel() {
       }
     }
     newMessagesByModel[model.name] = newMessages
-    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel) }
+    val newMessagesBySession = _uiState.value.messagesBySession.toMutableMap()
+    newMessagesBySession[key] = newMessages.toMutableList()
+    _uiState.update { _uiState.value.copy(messagesByModel = newMessagesByModel, messagesBySession = newMessagesBySession) }
   }
 
   fun addLogMessageToLastCollapsableProgressPanel(model: Model, logMessage: LogMessage) {

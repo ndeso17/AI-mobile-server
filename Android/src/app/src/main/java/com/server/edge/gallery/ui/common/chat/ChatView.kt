@@ -109,6 +109,8 @@ fun ChatView(
   onChatModeChanged: (ChatMode) -> Unit = {},
   showThinking: Boolean = false,
   onShowThinkingChanged: (Boolean) -> Unit = {},
+  webSearchEnabled: Boolean = false,
+  onWebSearchEnabledChanged: (Boolean) -> Unit = {},
   emptyStateComposable: @Composable (Model) -> Unit = {},
   allowEditingSystemPrompt: Boolean = false,
   curSystemPrompt: String = "",
@@ -125,8 +127,14 @@ fun ChatView(
     selectedModel.instance != null || modelManagerUiState.isModelInitialized(selectedModel)
   val isSelectedModelInitializing =
     selectedModelInitializationStatus?.status == ModelInitializationStatusType.INITIALIZING
+  val isSelectedModelError =
+    selectedModelInitializationStatus?.status == ModelInitializationStatusType.ERROR
   val chatModel =
-    if (isSelectedModelInitialized || isSelectedModelInitializing) selectedModel else EMPTY_MODEL
+    if (isSelectedModelInitialized || isSelectedModelInitializing || isSelectedModelError) {
+      selectedModel
+    } else {
+      EMPTY_MODEL
+    }
   val hasChatModel = chatModel.name != EMPTY_MODEL.name
 
   // Image viewer related.
@@ -136,6 +144,9 @@ fun ChatView(
 
   val context = LocalContext.current
   var navigatingUp by remember { mutableStateOf(false) }
+  LaunchedEffect(Unit) {
+    Log.d(TAG, "chat_model_selector_hidden=true")
+  }
 
   val handleNavigateUp = {
     navigatingUp = true
@@ -177,7 +188,7 @@ fun ChatView(
           modelManagerViewModel = modelManagerViewModel,
           navigationIcon = navigationIcon,
           canShowResetSessionButton = hasChatModel,
-          hideModelSelector = !hasChatModel,
+          hideModelSelector = true,
         isResettingSession = uiState.isResettingSession,
         inProgress = uiState.inProgress,
         modelPreparing = uiState.preparing,
@@ -199,17 +210,7 @@ fun ChatView(
           )
         },
         onBackClicked = { handleNavigateUp() },
-        onModelSelected = { prevModel, curModel ->
-          if (prevModel.name != curModel.name) {
-            modelManagerViewModel.cleanupModel(
-              context = context,
-              task = task,
-              model = prevModel,
-              reason = CleanupReason.MODEL_SWITCH,
-            )
-          }
-          modelManagerViewModel.selectModel(model = curModel)
-        },
+        onModelSelected = { _, _ -> },
         allowEditingSystemPrompt = allowEditingSystemPrompt,
         curSystemPrompt = curSystemPrompt,
         onSystemPromptChanged = onSystemPromptChanged,
@@ -237,13 +238,7 @@ fun ChatView(
                 viewModel = viewModel,
                 innerPadding = innerPadding,
                 navigateUp = navigateUp,
-                onSendMessage = { model, messages ->
-                  if (modelManagerViewModel.uiState.value.isModelInitialized(model)) {
-                    onSendMessage(model, messages)
-                  } else {
-                    Log.d(TAG, "Ignoring send because model '${model.name}' is not initialized")
-                  }
-                },
+                onSendMessage = { model, messages -> onSendMessage(model, messages) },
                 onRunAgainClicked = onRunAgainClicked,
                 onBenchmarkClicked = onBenchmarkClicked,
                 onStreamImageMessage = onStreamImageMessage,
@@ -272,8 +267,10 @@ fun ChatView(
                 onChatModeChanged = onChatModeChanged,
                 showThinking = showThinking,
                 onShowThinkingChanged = onShowThinkingChanged,
+                webSearchEnabled = webSearchEnabled,
+                onWebSearchEnabledChanged = onWebSearchEnabledChanged,
                 emptyStateComposable = emptyStateComposable,
-                inputEnabled = hasChatModel && isSelectedModelInitialized,
+                inputEnabled = true,
               )
             // Model download
             false ->

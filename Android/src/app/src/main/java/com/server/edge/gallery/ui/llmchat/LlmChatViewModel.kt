@@ -196,6 +196,39 @@ open class LlmChatViewModelBase() : ChatViewModel() {
                     )
                   }
                 }
+                val finalTextMessage = getLastMessage(model = model) as? ChatMessageText
+                if (finalTextMessage != null) {
+                  val sanitized = sanitizeFinalModelOutput(finalTextMessage.content)
+                  if (sanitized != finalTextMessage.content) {
+                    replaceLastMessage(
+                      model = model,
+                      message =
+                        ChatMessageText(
+                          content = sanitized,
+                          side = finalTextMessage.side,
+                          latencyMs = finalTextMessage.latencyMs,
+                          isMarkdown = finalTextMessage.isMarkdown,
+                          llmBenchmarkResult = finalTextMessage.llmBenchmarkResult,
+                          accelerator = finalTextMessage.accelerator,
+                          hideSenderLabel = finalTextMessage.hideSenderLabel,
+                          data = finalTextMessage.data,
+                        ),
+                      type = ChatMessageType.TEXT,
+                    )
+                  }
+                  if (isInvalidOutput(sanitized)) {
+                    Log.w(TAG, "output_guard_state invalid_output model=${model.name}")
+                    replaceLastMessage(
+                      model = model,
+                      message =
+                        ChatMessageError(
+                          content =
+                            "Jawaban model tidak valid (kosong/simbol). Coba kirim ulang atau matikan Web Search untuk prompt ini.",
+                        ),
+                      type = ChatMessageType.ERROR,
+                    )
+                  }
+                }
                 errorRecoveryRetryCountByModel[model.name] = 0
                 setInProgress(false)
                 onDone()
@@ -238,6 +271,20 @@ open class LlmChatViewModelBase() : ChatViewModel() {
         onError(e.message ?: "")
       }
     }
+  }
+
+  private fun sanitizeFinalModelOutput(raw: String): String {
+    return raw
+      .replace("<|endoftext|>", "")
+      .replace("<|im_end|>", "")
+      .replace(Regex("Human\\s*:\\s*.*$", RegexOption.IGNORE_CASE), "")
+      .trim()
+  }
+
+  private fun isInvalidOutput(text: String): Boolean {
+    if (text.isBlank()) return true
+    val alnumCount = text.count { it.isLetterOrDigit() }
+    return alnumCount == 0 || text == "?" || text == "??"
   }
 
   fun stopResponse(model: Model) {

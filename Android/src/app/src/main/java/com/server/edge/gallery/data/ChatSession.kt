@@ -26,6 +26,7 @@ data class ChatSession(
     val modelName: String? = null,
     val chatMode: String = "DEFAULT",
     val modelSwitchHistory: List<String> = emptyList(),
+    val webSearchEnabled: Boolean = false,
 ) {
     companion object {
         private val gson = Gson()

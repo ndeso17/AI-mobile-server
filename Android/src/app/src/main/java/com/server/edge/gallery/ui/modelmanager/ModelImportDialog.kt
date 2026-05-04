@@ -92,6 +92,24 @@ import kotlinx.coroutines.launch
 
 private const val TAG = "AGModelImportDialog"
 
+private fun detectImportedRuntimeType(fileName: String): ImportedModel.ImportedRuntimeType {
+  val lowerName = fileName.lowercase()
+  return if (lowerName.endsWith(".onnx")) {
+    ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_ONNX
+  } else {
+    ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_LITERT_LM
+  }
+}
+
+private fun detectConversionRequired(fileName: String): Boolean {
+  return fileName.lowercase().endsWith(".task")
+}
+
+private fun inferImageSupportFromName(fileName: String): Boolean {
+  val lowered = fileName.lowercase()
+  return lowered.contains("fastvlm") || lowered.contains("vlm") || lowered.contains("vision")
+}
+
 private val SUPPORTED_ACCELERATORS: List<Accelerator> =
   if (isPixel10()) {
     listOf(Accelerator.CPU)
@@ -197,6 +215,27 @@ fun ModelImportDialog(
           style = MaterialTheme.typography.titleLarge,
           modifier = Modifier.padding(bottom = 8.dp),
         )
+        val lowerFileName = fileName.lowercase()
+        val looksDesktopOnnx =
+          lowerFileName.endsWith(".onnx") &&
+            (lowerFileName.contains("avx2") ||
+              lowerFileName.contains("avx") ||
+              lowerFileName.contains("x86") ||
+              lowerFileName.contains("x64"))
+        if (looksDesktopOnnx) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(Icons.Rounded.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            Text(
+              "Model ONNX ini terindikasi build desktop (AVX2/x86) dan kemungkinan besar tidak kompatibel di Android ARM.",
+              color = MaterialTheme.colorScheme.error,
+              style = MaterialTheme.typography.bodyMedium,
+            )
+          }
+        }
 
         Column(
           modifier = Modifier.verticalScroll(rememberScrollState()).weight(1f, fill = false),
@@ -279,24 +318,36 @@ fun ModelImportDialog(
                 )
                   as Boolean
               val importedModel: ImportedModel =
-                ImportedModel.newBuilder()
-                  .setFileName(fileName)
-                  .setFileSize(fileSize)
-                  .setLlmConfig(
-                    LlmConfig.newBuilder()
-                      .addAllCompatibleAccelerators(supportedAccelerators)
-                      .setDefaultMaxTokens(defaultMaxTokens)
-                      .setDefaultTopk(defaultTopk)
-                      .setDefaultTopp(defaultTopp)
-                      .setDefaultTemperature(defaultTemperature)
-                      .setSupportImage(supportImage)
-                      .setSupportAudio(supportAudio)
-                      .setSupportMobileActions(supportMobileActions)
-                      .setSupportThinking(supportThinking)
-                      .setSupportTinyGarden(supportTinyGarden)
-                      .build()
-                  )
-                  .build()
+                run {
+                  val inferredImageSupport = inferImageSupportFromName(fileName)
+                  val needsConversion = detectConversionRequired(fileName)
+                  ImportedModel.newBuilder()
+                    .setFileName(fileName)
+                    .setFileSize(fileSize)
+                    .setRuntimeType(detectImportedRuntimeType(fileName))
+                    .setConversionRequired(needsConversion)
+                    .setConversionStatus(if (needsConversion) "pending_required" else "not_required")
+                    .setCapabilityProbeReasonCode(if (needsConversion) "TASK_CONVERSION_REQUIRED" else "")
+                    .setConversionOutputRuntimeType(
+                      if (needsConversion) ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_LITERT_LM
+                      else ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_UNSPECIFIED
+                    )
+                    .setLlmConfig(
+                      LlmConfig.newBuilder()
+                        .addAllCompatibleAccelerators(supportedAccelerators)
+                        .setDefaultMaxTokens(defaultMaxTokens)
+                        .setDefaultTopk(defaultTopk)
+                        .setDefaultTopp(defaultTopp)
+                        .setDefaultTemperature(defaultTemperature)
+                        .setSupportImage(supportImage || inferredImageSupport)
+                        .setSupportAudio(supportAudio)
+                        .setSupportMobileActions(supportMobileActions)
+                        .setSupportThinking(supportThinking)
+                        .setSupportTinyGarden(supportTinyGarden)
+                        .build()
+                    )
+                    .build()
+                }
               onDone(importedModel)
             }
           ) {
@@ -683,24 +734,37 @@ fun ModelRemoteImportDialog(
                 ) as Boolean
 
               val importedModel: ImportedModel =
-                ImportedModel.newBuilder()
-                  .setFileName(ensureValidFileName(normalizedName))
-                  .setFileSize(fileSize)
-                  .setLlmConfig(
-                    LlmConfig.newBuilder()
-                      .addAllCompatibleAccelerators(supportedAccelerators)
-                      .setDefaultMaxTokens(defaultMaxTokens)
-                      .setDefaultTopk(defaultTopk)
-                      .setDefaultTopp(defaultTopp)
-                      .setDefaultTemperature(defaultTemperature)
-                      .setSupportImage(supportImage)
-                      .setSupportAudio(supportAudio)
-                      .setSupportMobileActions(supportMobileActions)
-                      .setSupportThinking(supportThinking)
-                      .setSupportTinyGarden(supportTinyGarden)
-                      .build()
-                  )
-                  .build()
+                run {
+                  val sanitizedName = ensureValidFileName(normalizedName)
+                  val inferredImageSupport = inferImageSupportFromName(sanitizedName)
+                  val needsConversion = detectConversionRequired(sanitizedName)
+                  ImportedModel.newBuilder()
+                    .setFileName(sanitizedName)
+                    .setFileSize(fileSize)
+                    .setRuntimeType(detectImportedRuntimeType(normalizedName))
+                    .setConversionRequired(needsConversion)
+                    .setConversionStatus(if (needsConversion) "pending_required" else "not_required")
+                    .setCapabilityProbeReasonCode(if (needsConversion) "TASK_CONVERSION_REQUIRED" else "")
+                    .setConversionOutputRuntimeType(
+                      if (needsConversion) ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_LITERT_LM
+                      else ImportedModel.ImportedRuntimeType.IMPORTED_RUNTIME_TYPE_UNSPECIFIED
+                    )
+                    .setLlmConfig(
+                      LlmConfig.newBuilder()
+                        .addAllCompatibleAccelerators(supportedAccelerators)
+                        .setDefaultMaxTokens(defaultMaxTokens)
+                        .setDefaultTopk(defaultTopk)
+                        .setDefaultTopp(defaultTopp)
+                        .setDefaultTemperature(defaultTemperature)
+                        .setSupportImage(supportImage || inferredImageSupport)
+                        .setSupportAudio(supportAudio)
+                        .setSupportMobileActions(supportMobileActions)
+                        .setSupportThinking(supportThinking)
+                        .setSupportTinyGarden(supportTinyGarden)
+                        .build()
+                    )
+                    .build()
+                }
               onDone(importedModel, normalizedUrl)
             },
             enabled = modelUrl.isNotEmpty() && modelName.isNotEmpty(),

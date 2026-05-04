@@ -12,14 +12,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,10 +42,13 @@ import com.server.edge.gallery.data.ChatPreferencesRepository
 import com.server.edge.gallery.data.ChatSessionRepository
 import com.server.edge.gallery.data.EMPTY_MODEL
 import com.server.edge.gallery.data.Model
+import com.server.edge.gallery.data.ModelDownloadStatusType
 import com.server.edge.gallery.ui.modelmanager.ModelManagerViewModel
 import com.server.edge.gallery.ui.theme.emptyStateContent
 import com.server.edge.gallery.ui.theme.emptyStateTitle
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 private const val TAG = "AGChatHomeScreen"
 
@@ -68,8 +69,8 @@ fun ChatHomeScreen(
   var sessions by remember { mutableStateOf(repository.loadSessions()) }
   var activeSessionId by remember { mutableStateOf(repository.getActiveChatId()) }
   var activeChatMode by remember { mutableStateOf(repository.getActiveChatMode()) }
+  var activeWebSearchEnabled by remember { mutableStateOf(repository.getActiveWebSearchEnabled()) }
   var allowNextSessionRestoreForModelSelection by remember { mutableStateOf(false) }
-  var showStartupModelDialog by remember { mutableStateOf(false) }
 
   val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
   val selectedModel = modelManagerUiState.selectedModel
@@ -78,9 +79,10 @@ fun ChatHomeScreen(
 
   Log.d(TAG, "Compose: sessions=${sessions.size}, activeSessionId=$activeSessionId, selectedModel=${selectedModel.name}")
 
-  LaunchedEffect(modelManagerUiState.loadingModelAllowlist) {
-    if (!modelManagerUiState.loadingModelAllowlist && modelManagerViewModel.consumeStartupModelPrompt()) {
-      showStartupModelDialog = true
+  LaunchedEffect(activeSessionId) {
+    if (activeSessionId == null && viewModel.currentSessionId == null) {
+      viewModel.currentSessionId = "draft-${System.currentTimeMillis()}"
+      Log.d(TAG, "Allocated draft session key=${viewModel.currentSessionId}")
     }
   }
 
@@ -135,6 +137,8 @@ fun ChatHomeScreen(
         viewModel.currentSessionId = session.id
         activeChatMode = session.toChatMode()
         repository.setActiveChatMode(activeChatMode)
+        activeWebSearchEnabled = session.webSearchEnabled
+        repository.setActiveWebSearchEnabled(activeWebSearchEnabled)
         val uiMessages = session.toUiMessages(showThinking = preferencesRepository.getShowThinking())
         Log.d(TAG, "Converted to ${uiMessages.size} UI messages")
         viewModel.setMessages(targetModel, uiMessages)
@@ -148,6 +152,38 @@ fun ChatHomeScreen(
     }
   }
 
+  LaunchedEffect(
+    activeSessionId,
+    modelManagerUiState.routerAllowedModelNames,
+    modelManagerUiState.modelImportingUpdateTrigger,
+  ) {
+    val task = modelManagerViewModel.getTaskById(BuiltInTaskId.LLM_CHAT) ?: return@LaunchedEffect
+    val allowed = modelManagerUiState.routerAllowedModelNames
+    if (allowed.isEmpty()) return@LaunchedEffect
+    val candidates =
+      task.models
+        .filter { model ->
+          allowed.contains(model.name) &&
+            InferenceRouter.isGenerativeCandidate(model) &&
+            modelManagerUiState.modelDownloadStatus[model.name]?.status == ModelDownloadStatusType.SUCCEEDED
+        }
+        .distinctBy { it.name }
+    if (candidates.isEmpty()) return@LaunchedEffect
+    Log.d(TAG, "router_preload_start candidates=${candidates.map { it.name }}")
+    for (candidate in candidates) {
+      Log.d(TAG, "router_preload_step model=${candidate.name}")
+      val initialized = warmCheckModel(context = context, viewModel = modelManagerViewModel, task = task, model = candidate)
+      Log.d(TAG, "router_preload_done model=${candidate.name} ready=$initialized")
+      modelManagerViewModel.cleanupModel(
+        context = context,
+        task = task,
+        model = candidate,
+        reason = com.server.edge.gallery.ui.modelmanager.CleanupReason.INTERNAL_MEMORY_POLICY,
+      )
+      Log.d(TAG, "router_preload_unload_done model=${candidate.name}")
+    }
+  }
+
   fun refreshSessions() {
     val loaded = repository.loadSessions()
     Log.d(TAG, "refreshSessions: loaded ${loaded.size} sessions")
@@ -156,7 +192,12 @@ fun ChatHomeScreen(
 
   fun saveCurrentSession(model: Model) {
     scope.launch {
-      val messages = viewModel.uiState.value.messagesByModel[model.name] ?: return@launch
+      val sessionKey = viewModel.currentSessionId ?: model.name
+      val messages =
+        viewModel.uiState.value.messagesBySession[sessionKey]
+          ?: viewModel.uiState.value.messagesByModel[model.name]
+          ?: return@launch
+      Log.d(TAG, "chat_history_store=session_buffer key=$sessionKey count=${messages.size}")
       val includeThinkingInHistory = preferencesRepository.getShowThinking()
       val dataMessages = messages.toDataMessages(includeThinking = includeThinkingInHistory)
       Log.d(TAG, "saveCurrentSession: model=${model.name}, uiMsgs=${messages.size}, dataMsgs=${dataMessages.size}")
@@ -192,6 +233,7 @@ fun ChatHomeScreen(
             ((existingSession?.modelSwitchHistory ?: emptyList()).let { history ->
               if (history.lastOrNull() == model.name) history else history + model.name
             }),
+          webSearchEnabled = activeWebSearchEnabled,
         )
       repository.upsertSession(session)
       Log.d(TAG, "Upserted session $sessionId with ${dataMessages.size} messages")
@@ -215,6 +257,7 @@ fun ChatHomeScreen(
           onNewChat = {
             Log.d(TAG, "onNewChat clicked")
             activeSessionId = null
+            activeWebSearchEnabled = repository.getActiveWebSearchEnabled()
             viewModel.currentSessionId = null
             viewModel.clearAllMessages(selectedModel)
             scope.launch { drawerState.close() }
@@ -253,6 +296,11 @@ fun ChatHomeScreen(
       },
       showThinking = preferencesRepository.getShowThinking(),
       onShowThinkingChanged = { preferencesRepository.setShowThinking(it) },
+      webSearchEnabled = activeWebSearchEnabled,
+      onWebSearchEnabledChanged = {
+        activeWebSearchEnabled = it
+        repository.setActiveWebSearchEnabled(it)
+      },
       navigationIcon = navigationIcon,
       onMessagesUpdated = { model -> saveCurrentSession(model) },
       emptyStateComposable = { model ->
@@ -265,46 +313,21 @@ fun ChatHomeScreen(
     )
   }
 
-  if (showStartupModelDialog) {
-    val lastSelectedModelName = modelManagerViewModel.getLastSelectedModelName()
-    val chatTask = modelManagerViewModel.getTaskById(BuiltInTaskId.LLM_CHAT)
-    val lastModel = chatTask?.models?.firstOrNull { it.name == lastSelectedModelName }
-    val hasLastModel = !lastSelectedModelName.isBlank() && lastModel != null
+}
 
-    AlertDialog(
-      onDismissRequest = {},
-      title = { Text("Load model") },
-      text = {
-        if (hasLastModel) {
-          Text("App reopened. Load last model \"$lastSelectedModelName\" or choose another model?")
-        } else {
-          Text("App reopened. Last model tidak tersedia/kompatibel. Silakan pilih model lain.")
-        }
-      },
-      confirmButton = {
-        TextButton(
-          onClick = {
-            showStartupModelDialog = false
-            if (lastModel != null) {
-              modelManagerViewModel.selectModel(lastModel)
-            } else {
-              onGoToModels()
-            }
-          }
-        ) {
-          Text(if (hasLastModel) "Load last model" else "Choose model")
-        }
-      },
-      dismissButton = {
-        TextButton(
-          onClick = {
-            showStartupModelDialog = false
-            onGoToModels()
-          }
-        ) {
-          Text("Choose another model")
-        }
-      },
+private suspend fun warmCheckModel(
+  context: android.content.Context,
+  viewModel: ModelManagerViewModel,
+  task: com.server.edge.gallery.data.Task,
+  model: Model,
+): Boolean {
+  return suspendCancellableCoroutine { cont ->
+    viewModel.initializeModel(
+      context = context,
+      task = task,
+      model = model,
+      onDone = { if (cont.isActive) cont.resume(true) },
+      onError = { if (cont.isActive) cont.resume(false) },
     )
   }
 }

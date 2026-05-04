@@ -133,9 +133,9 @@
   <string name="settings_effective_filter_ram" translatable="false">RAM efektif untuk filter: %1$.1f GB</string>
   <string name="settings_expandable_ram_source" translatable="false">Sumber expandable RAM: %1$s</string>
   <string name="settings_expandable_ram_helper" translatable="false">Jika switch aktif, filter model memakai RAM expandable terdeteksi - 2GB untuk safety. Saat advertised RAM tidak tersedia/kurang valid, aplikasi estimasi dari RAM asli + SwapTotal. Tidak disarankan: risiko OOM dan app kill oleh Android bisa meningkat.</string>
-  <string name="import_supported_extensions_info" translatable="false">Supported local extensions: .task, .litertlm</string>
+  <string name="import_supported_extensions_info" translatable="false">Supported local extensions: .task, .litertlm, .onnx, .bin</string>
   <string name="import_remote_url_option" translatable="false">Register model from URL</string>
-  <string name="import_unsupported_type_actionable" translatable="false">Hanya file model native ".task" atau ".litertlm" yang didukung.</string>
+  <string name="import_unsupported_type_actionable" translatable="false">Hanya file model native ".task", ".litertlm", ".onnx", atau ".bin" yang didukung.</string>
   <string name="import_url_explainer" translatable="false">URL boleh berupa halaman model/repo (mis. HuggingFace) atau direct download URL. URL ini dipakai untuk registrasi metadata model; proses download tetap lewat flow download app.</string>
   <string name="refresh_dialog_title_success" translatable="false">Refresh berhasil</string>
   <string name="refresh_dialog_title_fallback" translatable="false">Refresh dengan fallback</string>
@@ -263,7 +263,7 @@
   <string name="aichat_emptystate_title" translatable="false">AI Chat</string>
   <string name="aichat_emptystate_content" translatable="false">Chat with on-device large language models.</string>
   <string name="aichat_no_model_title" translatable="false">How can I help you?</string>
-  <string name="aichat_no_model_content" translatable="false">Select and load a native model first, then chat with text, images, documents, or voice.</string>
+  <string name="aichat_no_model_content" translatable="false">Aktifkan minimal 1 model di menu Router Models (yang sudah didownload). Auto Router akan memilih dan memuat model secara otomatis saat Anda kirim chat.</string>
   <string name="load_model_first_dialog_title" translatable="false">Load model first</string>
   <string name="load_model_first_dialog_content" translatable="false">Please load a model first to start chatting.</string>
   <string name="add_script" translatable="false">Add script</string>
